@@ -99,6 +99,12 @@ class TestTask:
         with pytest.raises(Exception):
             Task(name="test", run=[])
 
+    def test_commands_must_not_be_blank(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            Task(name="test", run=["  "])
+        with pytest.raises(ValueError, match="must not be empty"):
+            Task(name="test", setup=[""], run=["echo ok"])
+
     def test_environment_variable_names_are_shell_safe(self):
         with pytest.raises(ValueError, match="Invalid environment variable name"):
             Task(name="test", run=["echo"], env={"BAD-NAME": "value"})

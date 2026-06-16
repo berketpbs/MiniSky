@@ -193,6 +193,16 @@ class Task(BaseModel):
                 raise ValueError(f"Invalid environment variable name: {invalid[0]}")
         return v
 
+    @field_validator('setup', 'run')
+    @classmethod
+    def validate_commands(cls, v: Optional[List[str]]) -> Optional[List[str]]:
+        """Reject command entries that cannot execute meaningful work."""
+        if v is not None:
+            for command in v:
+                if not command.strip():
+                    raise ValueError("Commands must not be empty")
+        return v
+
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Task":
         """
