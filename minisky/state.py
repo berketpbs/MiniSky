@@ -18,6 +18,8 @@ class StateManager:
     
     Storage location: ~/.minisky/state.db
     """
+
+    _CONNECTION_TIMEOUT_SECONDS = 30
     
     def __init__(self, db_path: Optional[str] = None):
         """
@@ -90,9 +92,13 @@ class StateManager:
     @contextmanager
     def _get_connection(self):
         """Context manager for database connections."""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=self._CONNECTION_TIMEOUT_SECONDS,
+        )
         conn.row_factory = sqlite3.Row
         try:
+            conn.execute("PRAGMA busy_timeout = 30000")
             yield conn
         finally:
             conn.close()

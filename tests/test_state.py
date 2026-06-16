@@ -28,6 +28,12 @@ def sample_vm():
 class TestStateManager:
     """Tests for StateManager class."""
 
+    def test_connections_use_a_busy_timeout(self, state_mgr):
+        with state_mgr._get_connection() as conn:
+            busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+
+        assert busy_timeout == 30000
+
     def test_add_and_get_vm(self, state_mgr, sample_vm):
         state_mgr.add_vm(sample_vm)
         vm = state_mgr.get_vm('test-vm-001')
