@@ -68,10 +68,13 @@ def register_provider(name: str, provider_class: type):
         name: Provider name
         provider_class: Provider class (must inherit from BaseProvider)
     """
+    normalized_name = name.strip().lower()
+    if not normalized_name:
+        raise ValueError("Provider name must not be empty")
     if not issubclass(provider_class, BaseProvider):
         raise TypeError("Provider must inherit from BaseProvider")
 
-    _PROVIDERS[name.lower()] = provider_class
+    _PROVIDERS[normalized_name] = provider_class
 
 
 def list_available_providers() -> list:
@@ -81,7 +84,7 @@ def list_available_providers() -> list:
     Returns:
         List of provider name strings
     """
-    return list(set(list(_PROVIDERS.keys()) + list(_LAZY_PROVIDERS.keys())))
+    return sorted(set(_PROVIDERS) | set(_LAZY_PROVIDERS))
 
 
 __all__ = [

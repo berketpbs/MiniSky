@@ -1,7 +1,13 @@
 """Tests for the provider modules."""
 
 import pytest
-from minisky.providers import get_provider, register_provider, BaseProvider, ProviderError
+from minisky.providers import (
+    BaseProvider,
+    ProviderError,
+    get_provider,
+    list_available_providers,
+    register_provider,
+)
 from minisky.providers.mock import MockProvider
 from minisky.task import Task
 
@@ -44,6 +50,22 @@ class TestProviderRegistry:
     def test_register_invalid_provider(self):
         with pytest.raises(TypeError):
             register_provider('bad', dict)
+
+    def test_register_rejects_empty_name(self):
+        class CustomProvider(BaseProvider):
+            def launch(self, task): return {}
+            def status(self, vm_id): return {}
+            def terminate(self, vm_id): return True
+            def stop(self, vm_id): return True
+            def start(self, vm_id): return True
+            def list_instances(self): return []
+
+        with pytest.raises(ValueError, match="must not be empty"):
+            register_provider("  ", CustomProvider)
+
+    def test_provider_names_are_sorted(self):
+        names = list_available_providers()
+        assert names == sorted(names)
 
 
 class TestMockProvider:
