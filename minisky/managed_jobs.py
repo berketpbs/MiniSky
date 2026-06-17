@@ -36,6 +36,12 @@ class CheckpointConfig:
     interval_minutes: int = 30
     max_checkpoints: int = 3
 
+    def __post_init__(self):
+        if self.interval_minutes <= 0:
+            raise ValueError("interval_minutes must be greater than zero")
+        if self.max_checkpoints <= 0:
+            raise ValueError("max_checkpoints must be greater than zero")
+
 
 @dataclass
 class RecoveryConfig:
@@ -44,6 +50,12 @@ class RecoveryConfig:
     retry_delay_seconds: int = 60
     use_spot: bool = True
     fallback_to_on_demand: bool = True
+
+    def __post_init__(self):
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+        if self.retry_delay_seconds < 0:
+            raise ValueError("retry_delay_seconds must be non-negative")
 
 
 @dataclass

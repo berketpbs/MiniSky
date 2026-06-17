@@ -5,7 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from minisky.managed_jobs import ManagedJob, ManagedJobController, ManagedJobStatus
+from minisky.managed_jobs import (
+    CheckpointConfig,
+    ManagedJob,
+    ManagedJobController,
+    ManagedJobStatus,
+    RecoveryConfig,
+)
 from minisky.state import StateManager
 from minisky.task import Task, ResourceRequirements
 
@@ -176,6 +182,12 @@ class TestCancelAndComplete:
 
 
 class TestSerialization:
+    def test_checkpoint_and_recovery_configs_reject_invalid_values(self):
+        with pytest.raises(ValueError, match="interval_minutes"):
+            CheckpointConfig(interval_minutes=0)
+        with pytest.raises(ValueError, match="max_retries"):
+            RecoveryConfig(max_retries=-1)
+
     def test_round_trip_preserves_fields(self):
         job = ManagedJob(
             job_id="managed-abc123",
