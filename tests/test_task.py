@@ -116,6 +116,9 @@ class TestTask:
         with pytest.raises(ValueError, match="between 1 and 65535"):
             Task(name="test", run=["echo"], ports=[65536])
 
+        with pytest.raises(ValueError, match="duplicates"):
+            Task(name="test", run=["echo"], ports=[8080, 8080])
+
     def test_from_yaml(self, tmp_path):
         yaml_content = {
             'name': 'yaml-test',

@@ -181,6 +181,8 @@ class Task(BaseModel):
         """Require TCP port values that can be used by forwarding tools."""
         if v is not None and any(port < 1 or port > 65535 for port in v):
             raise ValueError("Ports must be between 1 and 65535")
+        if v is not None and len(v) != len(set(v)):
+            raise ValueError("Ports must not contain duplicates")
         return v
 
     @field_validator('env')
