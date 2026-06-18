@@ -119,6 +119,16 @@ class StateManager:
         Args:
             vm_info: VM information dictionary
         """
+        vm_id = vm_info.get('vm_id')
+        ip_address = vm_info.get('ip_address')
+        ssh_port = vm_info.get('ssh_port', 22)
+        if not vm_id:
+            raise ValueError("vm_id must not be empty")
+        if not ip_address:
+            raise ValueError("ip_address must not be empty")
+        if not 1 <= ssh_port <= 65535:
+            raise ValueError("ssh_port must be between 1 and 65535")
+
         with self._get_connection() as conn:
             # Extract metadata (anything not in core fields)
             core_fields = {
@@ -133,11 +143,11 @@ class StateManager:
                     ssh_port, ssh_user, ssh_key_path, status, metadata
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                vm_info['vm_id'],
+                vm_id,
                 vm_info.get('provider', 'unknown'),
                 vm_info.get('task_name', 'unnamed'),
-                vm_info['ip_address'],
-                vm_info.get('ssh_port', 22),
+                ip_address,
+                ssh_port,
                 vm_info.get('ssh_user', 'root'),
                 vm_info.get('ssh_key_path'),
                 vm_info.get('status', 'unknown'),

@@ -43,6 +43,17 @@ class TestStateManager:
         assert vm['ip_address'] == '192.168.1.100'
         assert vm['status'] == 'running'
 
+    def test_add_vm_validates_identity_and_ssh_port(self, state_mgr, sample_vm):
+        invalid_vm = sample_vm.copy()
+        invalid_vm['vm_id'] = ''
+        with pytest.raises(ValueError, match="vm_id"):
+            state_mgr.add_vm(invalid_vm)
+
+        invalid_vm = sample_vm.copy()
+        invalid_vm['ssh_port'] = 65536
+        with pytest.raises(ValueError, match="ssh_port"):
+            state_mgr.add_vm(invalid_vm)
+
     def test_get_missing_vm(self, state_mgr):
         vm = state_mgr.get_vm('nonexistent')
         assert vm is None
