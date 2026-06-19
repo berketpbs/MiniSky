@@ -19,7 +19,7 @@ ensure_utf8_console()
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from minisky.api.core import (
     ClusterRecord,
@@ -80,6 +80,16 @@ class ClusterCreateRequest(BaseModel):
     instance_type: Optional[str] = None
     accelerators: Optional[Dict[str, int]] = None
     autostop_minutes: Optional[int] = Field(None, ge=1)
+
+    @field_validator("accelerators")
+    @classmethod
+    def validate_accelerators(cls, value: Optional[Dict[str, int]]) -> Optional[Dict[str, int]]:
+        if value is not None:
+            if any(not name.strip() for name in value):
+                raise ValueError("Accelerator names must not be empty")
+            if any(count < 1 for count in value.values()):
+                raise ValueError("Accelerator counts must be greater than zero")
+        return value
 
 
 class ClusterResponse(BaseModel):

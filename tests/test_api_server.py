@@ -189,6 +189,8 @@ class TestRequestValidation:
             ClusterCreateRequest(name="", num_nodes=0)
         with pytest.raises(ValueError):
             ClusterCreateRequest(name="cluster", autostop_minutes=0)
+        with pytest.raises(ValueError, match="Accelerator counts"):
+            ClusterCreateRequest(name="cluster", accelerators={"A100": 0})
 
     def test_job_request_rejects_empty_payload_fields(self):
         with pytest.raises(ValueError):
