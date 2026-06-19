@@ -34,6 +34,14 @@ class TestStateManager:
 
         assert busy_timeout == 30000
 
+    def test_custom_database_parent_is_created(self, tmp_path):
+        db_path = tmp_path / "nested" / "state.db"
+
+        manager = StateManager(db_path=str(db_path))
+
+        assert db_path.exists()
+        assert manager.list_vms() == []
+
     def test_add_and_get_vm(self, state_mgr, sample_vm):
         state_mgr.add_vm(sample_vm)
         vm = state_mgr.get_vm('test-vm-001')

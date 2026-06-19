@@ -34,6 +34,7 @@ class StateManager:
             db_path = str(minisky_dir / 'state.db')
         
         self.db_path = db_path
+        Path(self.db_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
     
     def _init_database(self):
