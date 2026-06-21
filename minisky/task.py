@@ -195,6 +195,18 @@ class Task(BaseModel):
                 raise ValueError(f"Invalid environment variable name: {invalid[0]}")
         return v
 
+    @field_validator('file_mounts')
+    @classmethod
+    def validate_file_mount_targets(
+        cls, value: Optional[Dict[str, FileMount]]
+    ) -> Optional[Dict[str, FileMount]]:
+        """Require absolute remote targets for file mounts."""
+        if value is not None:
+            invalid = [target for target in value if not target.startswith('/')]
+            if invalid:
+                raise ValueError(f"File mount target must be absolute: {invalid[0]}")
+        return value
+
     @field_validator('setup', 'run')
     @classmethod
     def validate_commands(cls, v: Optional[List[str]]) -> Optional[List[str]]:

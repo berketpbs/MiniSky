@@ -156,6 +156,12 @@ class TestTask:
         assert task.file_mounts['/data'].mode == 'COPY'
         assert task.file_mounts['/config'].source == './configs'
 
+    def test_file_mount_targets_must_be_absolute(self):
+        with pytest.raises(ValueError, match="must be absolute"):
+            Task(name="mount-test", run=["echo ok"], file_mounts={
+                "relative/path": {"source": "./data"},
+            })
+
     def test_from_yaml_not_found(self):
         with pytest.raises(FileNotFoundError):
             Task.from_yaml("nonexistent.yaml")
