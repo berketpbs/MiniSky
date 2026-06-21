@@ -99,6 +99,10 @@ class TestStateManager:
         result = state_mgr.update_status('nonexistent', 'stopped')
         assert result is False
 
+    def test_update_status_rejects_empty_value(self, state_mgr):
+        with pytest.raises(ValueError, match="status"):
+            state_mgr.update_status('missing', '  ')
+
     def test_remove_vm(self, state_mgr, sample_vm):
         state_mgr.add_vm(sample_vm)
         result = state_mgr.remove_vm('test-vm-001')

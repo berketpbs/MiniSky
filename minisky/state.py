@@ -216,6 +216,9 @@ class StateManager:
         Returns:
             True if updated, False if VM not found
         """
+        if not status or not status.strip():
+            raise ValueError("status must not be empty")
+
         with self._get_connection() as conn:
             cursor = conn.execute('''
                 UPDATE vms
