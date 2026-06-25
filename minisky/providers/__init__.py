@@ -36,7 +36,9 @@ def get_provider(provider_name: str, config: dict = None) -> BaseProvider:
     Raises:
         ValueError: If provider not found
     """
-    provider_name = provider_name.lower()
+    if not isinstance(provider_name, str) or not provider_name.strip():
+        raise ValueError("Provider name must not be empty")
+    provider_name = provider_name.strip().lower()
 
     # Check direct registry first
     if provider_name in _PROVIDERS:

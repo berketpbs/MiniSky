@@ -23,6 +23,13 @@ class TestProviderRegistry:
         provider = get_provider('MOCK')
         assert isinstance(provider, MockProvider)
 
+    def test_get_provider_trims_name(self):
+        assert isinstance(get_provider(' mock '), MockProvider)
+
+    def test_get_provider_rejects_empty_name(self):
+        with pytest.raises(ValueError, match="must not be empty"):
+            get_provider("  ")
+
     def test_get_unknown_provider(self):
         with pytest.raises(ValueError) as exc_info:
             get_provider('nonexistent_cloud')
