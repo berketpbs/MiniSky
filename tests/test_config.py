@@ -14,6 +14,14 @@ def tmp_config(tmp_path):
 
 
 class TestMiniSkyConfig:
+    def test_rejects_empty_dot_paths(self, tmp_config):
+        with pytest.raises(ValueError, match="must not be empty"):
+            tmp_config.get("providers..key")
+        with pytest.raises(ValueError, match="must not be empty"):
+            tmp_config.set("providers..key", "value")
+        with pytest.raises(ValueError, match="must not be empty"):
+            tmp_config.unset("providers..key")
+
     def test_loads_utf8_config(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text("default_provider: mock\n", encoding="utf-8")

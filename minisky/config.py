@@ -139,6 +139,9 @@ class MiniSkyConfig:
         Returns:
             The configuration value, or default if not found.
         """
+        if not key or any(not part for part in key.split('.')):
+            raise ValueError("Configuration key must not be empty")
+
         self._ensure_loaded()
         parts = key.split('.')
         current = self._data
@@ -157,6 +160,9 @@ class MiniSkyConfig:
             key: Dot-separated key path (e.g. 'providers.runpod.api_key')
             value: Value to set
         """
+        if not key or any(not part for part in key.split('.')):
+            raise ValueError("Configuration key must not be empty")
+
         self._ensure_loaded()
         parts = key.split('.')
         current = self._data
@@ -177,6 +183,9 @@ class MiniSkyConfig:
         Returns:
             True if key was found and removed, False otherwise.
         """
+        if not key or any(not part for part in key.split('.')):
+            raise ValueError("Configuration key must not be empty")
+
         self._ensure_loaded()
         parts = key.split('.')
         current = self._data
