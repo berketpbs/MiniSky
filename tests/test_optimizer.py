@@ -38,6 +38,12 @@ class TestOptimizerResult:
         r = OptimizerResult(provider="p", gpu_name="g", price_per_hour=1.0)
         assert r.available is True
 
+    def test_rejects_negative_prices(self):
+        with pytest.raises(ValueError, match="price_per_hour"):
+            OptimizerResult(provider="p", gpu_name="g", price_per_hour=-1.0)
+        with pytest.raises(ValueError, match="spot_price"):
+            OptimizerResult(provider="p", gpu_name="g", price_per_hour=1.0, spot_price=-1.0)
+
 
 class TestFindAllPriceSorting:
     """A legitimately free ($0/hr) candidate must sort first, not last."""

@@ -29,6 +29,11 @@ class OptimizerResult:
         available: bool = True,
         price_is_estimate: bool = False,
     ):
+        if price_per_hour < 0:
+            raise ValueError("price_per_hour must be non-negative")
+        if spot_price is not None and spot_price < 0:
+            raise ValueError("spot_price must be non-negative")
+
         self.provider = provider
         self.gpu_name = gpu_name
         self.price_per_hour = price_per_hour
