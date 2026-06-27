@@ -25,8 +25,7 @@ class TestOptimizerResult:
 
     def test_effective_price_zero_spot(self):
         r = OptimizerResult(provider="p", gpu_name="A100", price_per_hour=5.0, spot_price=0.0)
-        # spot_price=0 is falsy, so falls back to on-demand
-        assert r.effective_price == 5.0
+        assert r.effective_price == 0.0
 
     def test_repr(self):
         r = OptimizerResult(provider="runpod", gpu_name="A100", price_per_hour=1.50, spot_price=0.80)

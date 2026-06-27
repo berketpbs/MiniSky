@@ -41,7 +41,7 @@ class OptimizerResult:
     @property
     def effective_price(self) -> float:
         """Return spot price if available, otherwise on-demand."""
-        if self.spot_price and self.spot_price > 0:
+        if self.spot_price is not None and self.spot_price >= 0:
             return self.spot_price
         return self.price_per_hour
 
