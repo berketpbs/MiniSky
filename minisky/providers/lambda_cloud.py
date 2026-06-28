@@ -43,6 +43,18 @@ class LambdaProvider(BaseProvider):
             )
         return self._client
 
+    def close(self) -> None:
+        """Close the provider HTTP client when it is no longer needed."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
     def _resolve_instance_type(self, task: Any) -> str:
         """
         Resolve task resource requirements to a Lambda instance type.

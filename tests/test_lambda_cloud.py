@@ -88,6 +88,12 @@ def sample_task():
 # ---------------------------------------------------------------------------
 
 class TestResolveInstanceType:
+    def test_close_releases_http_client(self, provider):
+        client = provider._client
+        provider.close()
+        client.close.assert_called_once()
+        assert provider._client is None
+
     def test_resolve_cheapest_available(self, provider, sample_task):
         provider._client.get.return_value = _mock_response(200, INSTANCE_TYPES_RESPONSE)
         type_name, region = provider._resolve_instance_type(sample_task)
