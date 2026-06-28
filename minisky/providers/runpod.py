@@ -64,6 +64,18 @@ class RunPodProvider(BaseProvider):
             )
         return self._client
 
+    def close(self) -> None:
+        """Close the provider HTTP client when it is no longer needed."""
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+
     def _resolve_gpu_type(self, gpu_name: Optional[str]) -> Optional[str]:
         """Map MiniSky GPU name to RunPod gpuTypeId."""
         if gpu_name is None:

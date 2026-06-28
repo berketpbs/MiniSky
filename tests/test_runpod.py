@@ -73,6 +73,12 @@ def sample_task_no_gpu():
 # ---------------------------------------------------------------------------
 
 class TestResolveGpuType:
+    def test_close_releases_http_client(self, provider):
+        client = provider._client
+        provider.close()
+        client.close.assert_called_once()
+        assert provider._client is None
+
     def test_known_gpu(self, provider):
         assert provider._resolve_gpu_type("A100") == "NVIDIA A100 80GB PCIe"
 
