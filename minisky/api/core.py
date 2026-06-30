@@ -974,12 +974,14 @@ class JobController:
                 event_type=EventType.LOG_LINE,
                 payload={"job_id": job_id, "line": line, "stream": stream},
             )
+            publish = self.event_bus.publish(event, topic=f"job:{job_id}")
             try:
                 asyncio.run_coroutine_threadsafe(
-                    self.event_bus.publish(event, topic=f"job:{job_id}"),
+                    publish,
                     loop,
                 )
             except RuntimeError:
+                publish.close()
                 logger.debug("Dropping log event because the event loop stopped")
 
         return on_line

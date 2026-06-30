@@ -183,6 +183,19 @@ class TestCORSConfig:
             assert kwargs.get("allow_credentials", False) is False
 
 
+class TestLogForwarder:
+    @pytest.mark.asyncio
+    async def test_closed_loop_closes_unscheduled_publish_coroutine(self):
+        controller = JobController(EventBus(), ClusterController(EventBus()))
+        forwarder = controller._make_log_line_forwarder("job-1")
+
+        with patch(
+            "minisky.api.core.asyncio.run_coroutine_threadsafe",
+            side_effect=RuntimeError("loop closed"),
+        ):
+            forwarder("line", "stdout")
+
+
 class TestRequestValidation:
     def test_cluster_request_rejects_invalid_bounds(self):
         with pytest.raises(ValueError):
