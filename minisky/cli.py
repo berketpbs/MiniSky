@@ -574,7 +574,246 @@ def gpus(
     catalog = GPUCatalog(config)
     catalog.display(gpu_filter=gpu_filter, available_only=available_only)
 
+# --- Queue ---
+
+queue_app = typer.Typer(help="Job queue management")
+app.add_typer(queue_app, name="queue")
+
+
+@queue_app.command("list")
+def queue_list(
+    vm_id: Optional[str] = typer.Argument(None, help="Filter by VM ID"),
+    status_filter: Optional[str] = typer.Option(None, "--status", "-s", help="Filter by status (pending, running, completed, failed)"),
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum number of jobs to show"),
+):
+    """
+    List jobs in the queue.
+
+    Example:
+        minisky queue list
+        minisky queue list mock-abc123
+        minisky queue list --status running
+    """
+    from .queue import JobQueue, JobStatus
+    
+    job_queue = JobQueue()
+    
+    # Parse status filter
+    status = None
+    if status_filter:
+        try:
+            status = JobStatus(status_filter.lower())
+        except ValueError:
+            console.print(f"[red]Invalid status:[/red] {status_filter}")
+            console.print(f"Valid options: {', '.join(s.value for s in JobStatus)}")
+            raise typer.Exit(1)
+    
+    jobs = job_queue.list_jobs(vm_id=vm_id, status=status, limit=limit)
+    
+    if not jobs:
+        console.print("[yellow]No jobs found[/yellow]")
+        return
+    
+    table = Table(title="Job Queue")
+    table.add_column("Job ID", style="cyan")
+    table.add_column("VM ID", style="blue")
+    table.add_column("Command", style="white", max_width=40)
+    table.add_column("Status", style="yellow")
+    table.add_column("Created", style="dim")
+    table.add_column("Duration", style="green")
+    
+    for job in jobs:
+        # Format status with color
+        status_str = job.status.value
+        if job.status == JobStatus.RUNNING:
+            status_str = f"[green]{status_str}[/green]"
+        elif job.status == JobStatus.FAILED:
+            status_str = f"[red]{status_str}[/red]"
+        elif job.status == JobStatus.COMPLETED:
+            status_str = f"[blue]{status_str}[/blue]"
+        
+        # Format duration
+        duration_str = ""
+        if job.duration:
+            duration_str = f"{job.duration:.1f}s"
+        
+        table.add_row(
+            job.job_id,
+            job.vm_id[:12],
+            job.command[:40] + ("..." if len(job.command) > 40 else ""),
+            status_str,
+            job.created_at_str,
+            duration_str
+        )
+    
+    console.print(table)
+    
+    # Show stats
+    stats = job_queue.get_stats(vm_id)
+    console.print(f"\n[dim]Total: {stats['total']} | Pending: {stats['pending']} | Running: {stats['running']} | Completed: {stats['completed']} | Failed: {stats['failed']}[/dim]")
+
+
+@queue_app.command("add")
+def queue_add(
+    vm_id: str = typer.Argument(..., help="VM ID to run job on"),
+    command: str = typer.Argument(..., help="Command to execute"),
+    run_now: bool = typer.Option(False, "--run", "-r", help="Execute immediately"),
+):
+    """
+    Add a job to the queue.
+
+    Example:
+        minisky queue add mock-abc123 "python train.py"
+        minisky queue add mock-abc123 "nvidia-smi" --run
+    """
+    from .queue import JobQueue
+    
+    # Verify VM exists
+    vm_info = state.get_vm(vm_id)
+    if not vm_info:
+        console.print(f"[red]VM not found:[/red] {vm_id}")
+        raise typer.Exit(1)
+    
+    job_queue = JobQueue()
+    job = job_queue.add_job(vm_id, command)
+    
+    console.print(f"[green]>[/green] Job added: {job.job_id}")
+    console.print(f"  Command: {command}")
+    console.print(f"  Status: {job.status.value}")
+    
+    if run_now:
+        if vm_info['status'] != 'running':
+            console.print(f"[yellow]VM is not running (status: {vm_info['status']})[/yellow]")
+            return
+        
+        console.print("\n[cyan]Executing job...[/cyan]")
+        job_queue.mark_running(job.job_id)
+        
+        try:
+            executor = Executor(vm_info)
+            executor.connect()
+            exit_code = executor.execute_command(command)
+            executor.disconnect()
+            
+            if exit_code == 0:
+                job_queue.mark_completed(job.job_id, exit_code=exit_code)
+                console.print(f"[green]>[/green] Job completed successfully")
+            else:
+                job_queue.mark_failed(job.job_id, exit_code=exit_code)
+                console.print(f"[red]>[/red] Job failed with exit code {exit_code}")
+        except Exception as e:
+            job_queue.mark_failed(job.job_id, error=str(e))
+            console.print(f"[red]Error:[/red] {str(e)}")
+
+
+@queue_app.command("show")
+def queue_show(
+    job_id: str = typer.Argument(..., help="Job ID to show"),
+):
+    """
+    Show details of a specific job.
+
+    Example:
+        minisky queue show job-mock-abc12345
+    """
+    from .queue import JobQueue
+    
+    job_queue = JobQueue()
+    job = job_queue.get_job(job_id)
+    
+    if not job:
+        console.print(f"[red]Job not found:[/red] {job_id}")
+        raise typer.Exit(1)
+    
+    console.print(Panel(f"[bold]Job: {job.job_id}[/bold]", border_style="cyan"))
+    console.print(f"  VM ID: {job.vm_id}")
+    console.print(f"  Command: {job.command}")
+    console.print(f"  Status: {job.status.value}")
+    console.print(f"  Created: {job.created_at_str}")
+    
+    if job.started_at:
+        from datetime import datetime
+        console.print(f"  Started: {datetime.fromtimestamp(job.started_at).strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    if job.completed_at:
+        from datetime import datetime
+        console.print(f"  Completed: {datetime.fromtimestamp(job.completed_at).strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    if job.duration:
+        console.print(f"  Duration: {job.duration:.2f}s")
+    
+    if job.exit_code is not None:
+        console.print(f"  Exit Code: {job.exit_code}")
+    
+    if job.output:
+        console.print(f"\n[bold]Output:[/bold]")
+        console.print(job.output)
+    
+    if job.error:
+        console.print(f"\n[bold red]Error:[/bold red]")
+        console.print(job.error)
+
+
+@queue_app.command("cancel")
+def queue_cancel(
+    job_id: str = typer.Argument(..., help="Job ID to cancel"),
+):
+    """
+    Cancel a pending job.
+
+    Example:
+        minisky queue cancel job-mock-abc12345
+    """
+    from .queue import JobQueue
+    
+    job_queue = JobQueue()
+    
+    if job_queue.cancel_job(job_id):
+        console.print(f"[green]>[/green] Job cancelled: {job_id}")
+    else:
+        console.print(f"[yellow]Cannot cancel job (not pending or not found):[/yellow] {job_id}")
+
+
+@queue_app.command("clear")
+def queue_clear(
+    vm_id: str = typer.Argument(..., help="VM ID to clear jobs for"),
+    status_filter: Optional[str] = typer.Option(None, "--status", "-s", help="Only clear jobs with this status"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+):
+    """
+    Clear jobs for a VM.
+
+    Example:
+        minisky queue clear mock-abc123
+        minisky queue clear mock-abc123 --status completed
+    """
+    from .queue import JobQueue, JobStatus
+    
+    job_queue = JobQueue()
+    
+    status = None
+    if status_filter:
+        try:
+            status = JobStatus(status_filter.lower())
+        except ValueError:
+            console.print(f"[red]Invalid status:[/red] {status_filter}")
+            raise typer.Exit(1)
+    
+    if not force:
+        msg = f"Clear all jobs for VM {vm_id}"
+        if status:
+            msg += f" with status '{status.value}'"
+        msg += "?"
+        
+        if not typer.confirm(msg):
+            console.print("[yellow]Cancelled[/yellow]")
+            return
+    
+    count = job_queue.clear_vm_jobs(vm_id, status)
+    console.print(f"[green]>[/green] Cleared {count} jobs")
+
 
 if __name__ == "__main__":
     app()
+
 
