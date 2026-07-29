@@ -525,5 +525,26 @@ def check():
             console.print(f"  [yellow]![/yellow] No SSH key configured (will use ssh-agent)")
 
 
+# --- GPUs ---
+
+@app.command()
+def gpus(
+    gpu_filter: Optional[str] = typer.Argument(None, help="Filter by GPU name (e.g. A100, H100)"),
+    available_only: bool = typer.Option(False, "--available", "-a", help="Only show available GPUs"),
+):
+    """
+    Browse GPU pricing and availability across all providers.
+
+    Example:
+        minisky gpus
+        minisky gpus A100
+        minisky gpus --available
+    """
+    from .catalog import GPUCatalog
+    catalog = GPUCatalog(config)
+    catalog.display(gpu_filter=gpu_filter, available_only=available_only)
+
+
 if __name__ == "__main__":
     app()
+
