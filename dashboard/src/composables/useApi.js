@@ -1,0 +1,145 @@
+/**
+ * API composable for MiniSky dashboard
+ */
+
+const API_BASE = '/api'
+
+export function useApi() {
+
+    async function request(path, options = {}) {
+        const url = `${API_BASE}${path}`
+        const response = await fetch(url, {
+            headers: {
+                'Content-Type': 'application/json',
+                ...options.headers
+            },
+            ...options
+        })
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({ detail: response.statusText }))
+            throw new Error(error.detail || 'Request failed')
+        }
+
+        return response.json()
+    }
+
+    // Health
+    async function checkHealth() {
+        return request('/health')
+    }
+
+    // Clusters
+    async function listClusters() {
+        return request('/v1/clusters')
+    }
+
+    async function getCluster(id) {
+        return request(`/v1/clusters/${id}`)
+    }
+
+    async function createCluster(data) {
+        return request('/v1/clusters', {
+            method: 'POST',
+            body: JSON.stringify(data)
+        })
+    }
+
+    async function launchCluster(id) {
+        return request(`/v1/clusters/${id}/launch`, { method: 'POST' })
+    }
+
+    async function stopCluster(id) {
+        return request(`/v1/clusters/${id}/stop`, { method: 'POST' })
+    }
+
+    async function terminateCluster(id) {
+        return request(`/v1/clusters/${id}`, { method: 'DELETE' })
+    }
+
+    // Jobs
+    async function listJobs(clusterId = null) {
+        const params = clusterId ? `?cluster_id=${clusterId}` : ''
+        return request(`/v1/jobs${params}`)
+    }
+
+    async function getJob(id) {
+        return request(`/v1/jobs/${id}`)
+    }
+
+    async function submitJob(data) {
+        return request('/v1/jobs', {
+            method: 'POST',
+            body: JSON.stringify(data)
+        })
+    }
+
+    async function cancelJob(id) {
+        return request(`/v1/jobs/${id}/cancel`, { method: 'POST' })
+    }
+
+    return {
+        checkHealth,
+        listClusters,
+        getCluster,
+        createCluster,
+        launchCluster,
+        stopCluster,
+        terminateCluster,
+        listJobs,
+        getJob,
+        submitJob,
+        cancelJob
+    }
+}
+
+/**
+ * WebSocket composable for real-time updates
+ */
+export function useWebSocket() {
+    let ws = null
+    const listeners = new Set()
+
+    function connect() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        const wsUrl = `${protocol}//${window.location.host}/api/v1/ws`
+
+        ws = new WebSocket(wsUrl)
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data)
+                listeners.forEach(fn => fn(data))
+            } catch (e) {
+                console.error('WebSocket parse error:', e)
+            }
+        }
+
+        ws.onclose = () => {
+            // Reconnect after 5 seconds
+            setTimeout(connect, 5000)
+        }
+
+        ws.onerror = (error) => {
+            console.error('WebSocket error:', error)
+        }
+    }
+
+    function subscribe(callback) {
+        listeners.add(callback)
+        return () => listeners.delete(callback)
+    }
+
+    function disconnect() {
+        if (ws) {
+            ws.close()
+            ws = null
+        }
+    }
+
+    return {
+        connect,
+        subscribe,
+        disconnect
+    }
+}
