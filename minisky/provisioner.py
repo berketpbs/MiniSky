@@ -24,9 +24,8 @@ from enum import Enum
 import logging
 import socket
 
-from minisky.executor import SSHExecutor
+from minisky.executor import Executor, ExecutorError
 from minisky.state import StateManager
-from minisky.config import ConfigManager
 
 logger = logging.getLogger(__name__)
 
@@ -76,21 +75,12 @@ class SSHKeyManager:
     """
     
     def __init__(self):
-        self.config = ConfigManager()
         self._key_path: Optional[Path] = None
     
     def get_key_path(self) -> Path:
         """Get path to SSH private key, creating one if needed."""
         if self._key_path and self._key_path.exists():
             return self._key_path
-        
-        # Check config for custom key path
-        custom_path = self.config.get("ssh.key_path")
-        if custom_path:
-            path = Path(custom_path).expanduser()
-            if path.exists():
-                self._key_path = path
-                return path
         
         # Check default locations
         default_paths = [
@@ -178,20 +168,24 @@ class Provisioner:
         self.config = config or ProvisionConfig()
         self.state = ProvisionState.PENDING
         self.ssh_key_manager = SSHKeyManager()
-        self._executor: Optional[SSHExecutor] = None
+        self._executor: Optional[Executor] = None
         self._start_time: float = 0
     
+    def _create_executor(self) -> Executor:
+        """Create an executor with SSH key path."""
+        key_path = self.ssh_key_manager.get_key_path()
+        
+        # Add key path to vm_info
+        vm_info_with_key = dict(self.vm_info)
+        vm_info_with_key["ssh_key_path"] = str(key_path)
+        
+        return Executor(vm_info_with_key)
+    
     @property
-    def executor(self) -> SSHExecutor:
+    def executor(self) -> Executor:
         """Get or create SSH executor."""
         if self._executor is None:
-            key_path = self.ssh_key_manager.get_key_path()
-            self._executor = SSHExecutor(
-                host=self.vm_info["ip_address"],
-                port=self.vm_info.get("ssh_port", 22),
-                user=self.vm_info.get("ssh_user", "root"),
-                key_path=str(key_path)
-            )
+            self._executor = self._create_executor()
         return self._executor
     
     def _log(self, message: str):
@@ -204,7 +198,7 @@ class Provisioner:
         """Transition to a new state."""
         old_state = self.state
         self.state = new_state
-        self._log(f"[{self.vm_info['vm_id']}] {old_state} -> {new_state}" + (f": {reason}" if reason else ""))
+        self._log(f"[{self.vm_info.get('vm_id', 'unknown')}] {old_state} -> {new_state}" + (f": {reason}" if reason else ""))
     
     def wait_for_ssh(self) -> bool:
         """
@@ -231,6 +225,8 @@ class Provisioner:
                     self.executor.connect()
                     self._log(f"SSH connection established after {attempt} attempts")
                     return True
+                except ExecutorError as e:
+                    self._log(f"SSH attempt {attempt} failed: {e}")
                 except Exception as e:
                     self._log(f"SSH attempt {attempt} failed: {e}")
             else:
@@ -302,48 +298,26 @@ class Provisioner:
         
         self._transition(ProvisionState.RUNNING_SETUP)
         
-        # Combine commands into a single script for efficiency
-        script = "set -e\n" + "\n".join(setup_commands)
+        output_lines: List[str] = []
         
-        # Create temp script file
-        script_path = "/tmp/minisky_setup.sh"
+        for cmd in setup_commands:
+            self._log(f"[setup] Running: {cmd}")
+            
+            try:
+                exit_code = self.executor.execute_command(
+                    cmd,
+                    stream_output=self.config.stream_logs
+                )
+                
+                if exit_code != 0:
+                    self._transition(ProvisionState.FAILED, f"Setup command failed: {cmd}")
+                    return False, "\n".join(output_lines)
+                    
+            except Exception as e:
+                self._transition(ProvisionState.FAILED, f"Setup error: {e}")
+                return False, str(e)
         
-        try:
-            # Upload script
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
-                f.write(script)
-                local_script = f.name
-            
-            self.executor.upload_file(local_script, script_path)
-            os.unlink(local_script)
-            
-            # Make executable and run
-            self.executor.execute_command(f"chmod +x {script_path}", stream_output=False)
-            
-            output_lines: List[str] = []
-            
-            def capture_output(line: str):
-                output_lines.append(line)
-                if self.config.stream_logs:
-                    self._log(f"[setup] {line}")
-            
-            exit_code = self.executor.execute_command(
-                f"bash {script_path}",
-                stream_output=True,
-                output_callback=capture_output
-            )
-            
-            output = "\n".join(output_lines)
-            
-            if exit_code != 0:
-                self._transition(ProvisionState.FAILED, f"Setup failed with exit code {exit_code}")
-                return False, output
-            
-            return True, output
-            
-        except Exception as e:
-            self._transition(ProvisionState.FAILED, f"Setup error: {e}")
-            return False, str(e)
+        return True, "\n".join(output_lines)
     
     def run_task(self, run_command: str, env: Optional[Dict[str, str]] = None) -> Tuple[int, str]:
         """
@@ -365,28 +339,20 @@ class Provisioner:
         else:
             full_command = run_command
         
-        output_lines: List[str] = []
-        
-        def capture_output(line: str):
-            output_lines.append(line)
-            if self.config.stream_logs:
-                self._log(f"[run] {line}")
+        self._log(f"[run] Executing: {run_command}")
         
         try:
             exit_code = self.executor.execute_command(
                 full_command,
-                stream_output=True,
-                output_callback=capture_output
+                stream_output=self.config.stream_logs
             )
-            
-            output = "\n".join(output_lines)
             
             if exit_code == 0:
                 self._transition(ProvisionState.COMPLETED)
             else:
                 self._transition(ProvisionState.FAILED, f"Task exited with code {exit_code}")
             
-            return exit_code, output
+            return exit_code, ""
             
         except Exception as e:
             self._transition(ProvisionState.FAILED, f"Task error: {e}")
@@ -412,6 +378,7 @@ class Provisioner:
             ProvisionResult with outcome details
         """
         self._start_time = time.time()
+        vm_id = self.vm_info.get("vm_id", "unknown")
         
         try:
             # Step 1: Wait for SSH
@@ -419,7 +386,7 @@ class Provisioner:
                 return ProvisionResult(
                     success=False,
                     state=self.state,
-                    vm_id=self.vm_info["vm_id"],
+                    vm_id=vm_id,
                     error="SSH connection timeout"
                 )
             
@@ -434,7 +401,7 @@ class Provisioner:
                     return ProvisionResult(
                         success=False,
                         state=self.state,
-                        vm_id=self.vm_info["vm_id"],
+                        vm_id=vm_id,
                         output=setup_output,
                         error="Setup failed",
                         duration_seconds=time.time() - self._start_time
@@ -446,7 +413,7 @@ class Provisioner:
                 return ProvisionResult(
                     success=(exit_code == 0),
                     state=self.state,
-                    vm_id=self.vm_info["vm_id"],
+                    vm_id=vm_id,
                     exit_code=exit_code,
                     output=run_output,
                     duration_seconds=time.time() - self._start_time
@@ -457,7 +424,7 @@ class Provisioner:
             return ProvisionResult(
                 success=True,
                 state=self.state,
-                vm_id=self.vm_info["vm_id"],
+                vm_id=vm_id,
                 duration_seconds=time.time() - self._start_time
             )
             
@@ -466,13 +433,16 @@ class Provisioner:
             return ProvisionResult(
                 success=False,
                 state=self.state,
-                vm_id=self.vm_info["vm_id"],
+                vm_id=vm_id,
                 error=str(e),
                 duration_seconds=time.time() - self._start_time
             )
         finally:
             if self._executor:
-                self._executor.close()
+                try:
+                    self._executor.disconnect()
+                except Exception:
+                    pass
 
 
 class AsyncProvisioner:
