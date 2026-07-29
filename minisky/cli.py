@@ -38,23 +38,44 @@ def launch(
     task_file: str = typer.Argument(..., help="Path to task YAML file"),
     detach: bool = typer.Option(False, "--detach", "-d", help="Launch and detach (don't wait for completion)"),
     provider: Optional[str] = typer.Option(None, "--provider", "-p", help="Override provider from task YAML"),
+    optimize: bool = typer.Option(False, "--optimize", "-o", help="Auto-select cheapest provider"),
+    spot: bool = typer.Option(False, "--spot", "-s", help="Request spot/preemptible instance"),
 ):
     """
     Launch a new task on a cloud VM.
 
     Example:
         minisky launch task.yaml
-        minisky launch task.yaml --detach
-        minisky launch task.yaml --provider runpod
+        minisky launch task.yaml --optimize
+        minisky launch task.yaml --provider runpod --spot
     """
     try:
         # Parse task
         console.print(f"[cyan]Loading task from {task_file}...[/cyan]")
         task = Task.from_yaml(task_file)
 
+        # Override spot if specified via CLI
+        if spot:
+            task.resources.use_spot = True
+
         # Override provider if specified via CLI
         if provider:
             task.provider = provider
+
+        # Cost optimizer: find cheapest provider
+        if optimize and not provider:
+            from .optimizer import CostOptimizer
+            optimizer = CostOptimizer(config)
+            console.print("[cyan]Searching for cheapest option...[/cyan]")
+            best = optimizer.find_best(task, prefer_spot=task.resources.use_spot)
+            if best and best.available and best.provider != 'mock':
+                task.provider = best.provider
+                console.print(
+                    f"[green]>[/green] Optimizer selected: [bold]{best.provider}[/bold] "
+                    f"({best.gpu_name}) at ${best.effective_price:.2f}/hr"
+                )
+            else:
+                console.print("[yellow]No cheaper real provider found, using task default[/yellow]")
 
         console.print(f"[green]>[/green] Task '{task.name}' loaded")
         console.print(f"  Provider: {task.provider}")
@@ -84,6 +105,14 @@ def launch(
         # Save to state
         state.add_vm(vm_info)
 
+        # Register autostop if configured
+        autostop_minutes = task.autostop_minutes or config.get('autostop_minutes')
+        if autostop_minutes and detach:
+            from .autostop import AutostopManager
+            autostop = AutostopManager(config, state)
+            autostop.register(vm_info['vm_id'], autostop_minutes)
+            autostop.start_daemon()
+
         if not detach:
             # Execute task
             console.print("\n[cyan]Executing task...[/cyan]")
@@ -93,6 +122,7 @@ def launch(
         else:
             console.print("\n[yellow]Task launched in detached mode[/yellow]")
             console.print(f"Use 'minisky logs {vm_info['vm_id']}' to view logs")
+
 
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
