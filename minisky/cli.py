@@ -14,7 +14,7 @@ from rich.live import Live
 from rich.spinner import Spinner
 from rich.text import Text
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import time
 
 from .task import Task
@@ -727,6 +727,115 @@ def gpus(
     from .catalog import GPUCatalog
     catalog = GPUCatalog(config)
     catalog.display(gpu_filter=gpu_filter, available_only=available_only)
+
+# --- Sync ---
+
+@app.command()
+def sync(
+    vm_id: str = typer.Argument(..., help="VM ID to sync files to/from"),
+    local_path: str = typer.Argument(..., help="Local directory path"),
+    remote_path: str = typer.Option("~/workdir", "--remote", "-r", help="Remote directory path"),
+    download: bool = typer.Option(False, "--download", "-d", help="Download from remote (default is upload)"),
+    exclude: Optional[List[str]] = typer.Option(None, "--exclude", "-e", help="Patterns to exclude"),
+    delete: bool = typer.Option(False, "--delete", help="Delete extraneous files on destination"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be transferred"),
+):
+    """
+    Sync files between local and remote VM.
+
+    Uses rsync when available, falls back to SFTP.
+
+    Example:
+        minisky sync mock-abc123 ./src
+        minisky sync mock-abc123 ./src --remote ~/project
+        minisky sync mock-abc123 ./results --download
+        minisky sync mock-abc123 ./src --exclude "*.pyc" --exclude "__pycache__"
+    """
+    try:
+        vm_info = state.get_vm(vm_id)
+        if not vm_info:
+            console.print(f"[red]VM not found:[/red] {vm_id}")
+            raise typer.Exit(1)
+        
+        if vm_info['status'] != 'running':
+            console.print(f"[red]VM is not running:[/red] {vm_info['status']}")
+            raise typer.Exit(1)
+        
+        from .file_sync import RsyncSyncer, SyncConfig, SyncDirection
+        
+        # Build config
+        sync_config = SyncConfig(
+            delete_extraneous=delete,
+            dry_run=dry_run,
+        )
+        if exclude:
+            sync_config.exclude_patterns.extend(exclude)
+        
+        syncer = RsyncSyncer(vm_info, sync_config)
+        
+        direction = SyncDirection.REMOTE_TO_LOCAL if download else SyncDirection.LOCAL_TO_REMOTE
+        action = "Downloading" if download else "Uploading"
+        
+        console.print(f"\n[bold]{action} files[/bold]")
+        console.print(f"  Local:  {local_path}")
+        console.print(f"  Remote: {remote_path}")
+        if dry_run:
+            console.print(f"  [yellow]DRY RUN - no files will be transferred[/yellow]")
+        
+        result = syncer.sync(local_path, remote_path, direction)
+        
+        if result.success:
+            console.print(f"\n[green]✓[/green] Sync completed")
+            console.print(f"  Files: {result.files_transferred}")
+            console.print(f"  Time: {result.duration_seconds:.1f}s")
+            console.print(f"  Method: {result.method}")
+        else:
+            console.print(f"\n[red]✗[/red] Sync failed: {result.error}")
+            raise typer.Exit(1)
+    
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
+@app.command()
+def rsync(
+    vm_id: str = typer.Argument(..., help="VM ID"),
+    local_path: str = typer.Argument(..., help="Local path"),
+    remote_path: str = typer.Argument(..., help="Remote path"),
+    download: bool = typer.Option(False, "--download", "-d", help="Download instead of upload"),
+):
+    """
+    Quick rsync shortcut for file sync.
+
+    Example:
+        minisky rsync mock-abc123 ./data ~/data
+        minisky rsync mock-abc123 ~/results ./results --download
+    """
+    try:
+        vm_info = state.get_vm(vm_id)
+        if not vm_info:
+            console.print(f"[red]VM not found:[/red] {vm_id}")
+            raise typer.Exit(1)
+        
+        from .file_sync import sync_workdir, download_results
+        
+        if download:
+            result = download_results(vm_info, remote_path, local_path)
+        else:
+            result = sync_workdir(vm_info, local_path, remote_path)
+        
+        if not result.success:
+            raise typer.Exit(1)
+    
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
 
 # --- Queue ---
 
