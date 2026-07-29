@@ -6,6 +6,7 @@ and command execution on remote VMs.
 """
 
 import paramiko
+import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from rich.console import Console
@@ -112,7 +113,8 @@ class Executor:
         self,
         command: str,
         env: Optional[Dict[str, str]] = None,
-        stream_output: bool = True
+        stream_output: bool = True,
+        workdir: Optional[str] = None
     ) -> int:
         """
         Execute a command on the remote VM.
@@ -121,6 +123,7 @@ class Executor:
             command: Command to execute
             env: Environment variables
             stream_output: Whether to stream output to console
+            workdir: Remote working directory to execute the command in
             
         Returns:
             Exit code of the command
@@ -135,9 +138,13 @@ class Executor:
             # Prepare environment
             env_str = ""
             if env:
-                env_str = " ".join([f"{k}={v}" for k, v in env.items()]) + " "
+                env_str = " ".join([f"{k}={shlex.quote(str(v))}" for k, v in env.items()]) + " "
             
             full_command = f"{env_str}{command}"
+            
+            # Change to workdir if specified
+            if workdir:
+                full_command = f"cd {workdir} && {full_command}"
             
             # Execute command
             stdin, stdout, stderr = self.ssh_client.exec_command(full_command)
@@ -177,6 +184,11 @@ class Executor:
             
             if not local_dir.exists():
                 raise ExecutorError(f"Local directory does not exist: {local_path}")
+            
+            # Normalize remote path if it starts with ~
+            if remote_path.startswith('~/'):
+                home_dir = self.sftp_client.normalize('.')
+                remote_path = remote_path.replace('~', home_dir, 1)
             
             console.print(f"[cyan]Syncing files from {local_path} to {remote_path}...[/cyan]")
             
@@ -230,17 +242,16 @@ class Executor:
             self.connect()
             
             # Sync workdir if specified
+            remote_workdir = "~/workdir" if task.workdir else None
             if task.workdir:
-                self.sync_files(task.workdir)
-                # Change to workdir
-                self.execute_command(f"cd ~/workdir", stream_output=False)
+                self.sync_files(task.workdir, remote_path=remote_workdir)
             
             # Execute setup commands
             if task.setup:
                 console.print("\n[bold cyan]Running setup commands...[/bold cyan]")
                 for i, cmd in enumerate(task.setup, 1):
                     console.print(f"\n[cyan]Setup {i}/{len(task.setup)}:[/cyan] {cmd}")
-                    exit_code = self.execute_command(cmd, env=task.env)
+                    exit_code = self.execute_command(cmd, env=task.env, workdir=remote_workdir)
                     if exit_code != 0:
                         raise ExecutorError(f"Setup command failed with exit code {exit_code}")
             
@@ -248,7 +259,7 @@ class Executor:
             console.print("\n[bold green]Running main commands...[/bold green]")
             for i, cmd in enumerate(task.run, 1):
                 console.print(f"\n[green]Run {i}/{len(task.run)}:[/green] {cmd}")
-                exit_code = self.execute_command(cmd, env=task.env)
+                exit_code = self.execute_command(cmd, env=task.env, workdir=remote_workdir)
                 if exit_code != 0:
                     raise ExecutorError(f"Run command failed with exit code {exit_code}")
             
