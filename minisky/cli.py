@@ -9,9 +9,13 @@ import typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.live import Live
+from rich.spinner import Spinner
+from rich.text import Text
 from pathlib import Path
 from typing import Optional
+import time
 
 from .task import Task
 from .state import StateManager
@@ -19,6 +23,7 @@ from .providers import get_provider
 from .executor import Executor
 from .config import MiniSkyConfig
 from .logger import LogManager
+from .provisioner import Provisioner, ProvisionState, ProvisionConfig
 
 app = typer.Typer(
     name="minisky",
@@ -33,6 +38,47 @@ log_manager = LogManager(config)
 
 # --- Launch ---
 
+def _display_provision_status(state: ProvisionState, elapsed: float) -> Text:
+    """Create a rich Text display for provisioning status."""
+    state_icons = {
+        ProvisionState.PENDING: "⏳",
+        ProvisionState.WAITING_SSH: "🔌",
+        ProvisionState.INJECTING_KEYS: "🔑",
+        ProvisionState.RUNNING_SETUP: "⚙️",
+        ProvisionState.RUNNING_TASK: "🚀",
+        ProvisionState.COMPLETED: "✅",
+        ProvisionState.FAILED: "❌",
+    }
+    state_colors = {
+        ProvisionState.PENDING: "yellow",
+        ProvisionState.WAITING_SSH: "cyan",
+        ProvisionState.INJECTING_KEYS: "blue",
+        ProvisionState.RUNNING_SETUP: "magenta",
+        ProvisionState.RUNNING_TASK: "green",
+        ProvisionState.COMPLETED: "green",
+        ProvisionState.FAILED: "red",
+    }
+    state_labels = {
+        ProvisionState.PENDING: "Pending",
+        ProvisionState.WAITING_SSH: "Waiting for SSH",
+        ProvisionState.INJECTING_KEYS: "Injecting SSH keys",
+        ProvisionState.RUNNING_SETUP: "Running setup",
+        ProvisionState.RUNNING_TASK: "Running task",
+        ProvisionState.COMPLETED: "Completed",
+        ProvisionState.FAILED: "Failed",
+    }
+    
+    icon = state_icons.get(state, "❓")
+    color = state_colors.get(state, "white")
+    label = state_labels.get(state, str(state))
+    
+    text = Text()
+    text.append(f"{icon} ", style="bold")
+    text.append(f"{label}", style=f"bold {color}")
+    text.append(f" ({elapsed:.1f}s)", style="dim")
+    return text
+
+
 @app.command()
 def launch(
     task_file: str = typer.Argument(..., help="Path to task YAML file"),
@@ -40,6 +86,7 @@ def launch(
     provider: Optional[str] = typer.Option(None, "--provider", "-p", help="Override provider from task YAML"),
     optimize: bool = typer.Option(False, "--optimize", "-o", help="Auto-select cheapest provider"),
     spot: bool = typer.Option(False, "--spot", "-s", help="Request spot/preemptible instance"),
+    skip_setup: bool = typer.Option(False, "--skip-setup", help="Skip setup commands"),
 ):
     """
     Launch a new task on a cloud VM.
@@ -89,16 +136,17 @@ def launch(
         # Get provider
         cloud = get_provider(task.provider)
 
-        # Launch VM
+        # Phase 1: Launch VM
+        console.print("\n[bold]Phase 1/4: Launching VM[/bold]")
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=console
         ) as progress:
-            progress.add_task(description="Launching VM...", total=None)
+            progress.add_task(description="Provisioning VM...", total=None)
             vm_info = cloud.launch(task)
 
-        console.print(f"[green]>[/green] VM launched: {vm_info['vm_id']}")
+        console.print(f"[green]✓[/green] VM launched: {vm_info['vm_id']}")
         console.print(f"  IP: {vm_info['ip_address']}")
         console.print(f"  Provider: {vm_info['provider']}")
 
@@ -113,17 +161,105 @@ def launch(
             autostop.register(vm_info['vm_id'], autostop_minutes)
             autostop.start_daemon()
 
-        if not detach:
-            # Execute task
-            console.print("\n[cyan]Executing task...[/cyan]")
-            executor = Executor(vm_info)
-            executor.execute_task(task)
-            console.print("[green]>[/green] Task completed")
-        else:
+        if detach:
             console.print("\n[yellow]Task launched in detached mode[/yellow]")
             console.print(f"Use 'minisky logs {vm_info['vm_id']}' to view logs")
+            return
 
+        # Phase 2: Wait for SSH and provision
+        console.print("\n[bold]Phase 2/4: Establishing SSH connection[/bold]")
+        
+        # Create provisioner for SSH lifecycle management with custom config
+        provision_config = ProvisionConfig(
+            ssh_timeout=120,
+            ssh_retry_interval=5,
+            stream_logs=True
+        )
+        provisioner = Provisioner(vm_info, config=provision_config)
+        start_time = time.time()
+        
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            ssh_task = progress.add_task(description="Waiting for SSH to be ready...", total=None)
+            
+            if not provisioner.wait_for_ssh():
+                console.print("[red]✗[/red] Failed to establish SSH connection")
+                console.print("  The VM may still be booting. Try again with:")
+                console.print(f"  minisky exec {vm_info['vm_id']} -- <command>")
+                raise typer.Exit(1)
+        
+        ssh_elapsed = time.time() - start_time
+        console.print(f"[green]✓[/green] SSH connection established ({ssh_elapsed:.1f}s)")
 
+        # Phase 3: Run setup commands
+        setup_commands = task.setup if not skip_setup else None
+        if setup_commands:
+            console.print(f"\n[bold]Phase 3/4: Running setup ({len(setup_commands)} commands)[/bold]")
+            
+            for i, cmd in enumerate(setup_commands, 1):
+                console.print(f"\n[cyan]Setup {i}/{len(setup_commands)}:[/cyan] {cmd}")
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console
+                ) as progress:
+                    progress.add_task(description="Executing...", total=None)
+                    success, output = provisioner.run_setup([cmd])
+                
+                if success:
+                    console.print(f"[green]✓[/green] Setup {i} completed")
+                else:
+                    console.print(f"[red]✗[/red] Setup {i} failed")
+                    if output:
+                        console.print(f"  Output: {output}")
+                    raise typer.Exit(1)
+        else:
+            console.print("\n[bold]Phase 3/4: Setup[/bold] [dim](skipped)[/dim]")
+
+        # Phase 4: Run main task
+        console.print(f"\n[bold]Phase 4/4: Running task ({len(task.run)} commands)[/bold]")
+        
+        # Sync workdir if specified
+        if task.workdir:
+            console.print(f"\n[cyan]Syncing workdir:[/cyan] {task.workdir}")
+            executor = Executor(vm_info)
+            executor.connect()
+            try:
+                executor.sync_files(task.workdir, remote_path="~/workdir")
+            finally:
+                executor.disconnect()
+        
+        # Run task commands
+        for i, cmd in enumerate(task.run, 1):
+            console.print(f"\n[green]Run {i}/{len(task.run)}:[/green] {cmd}")
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console
+            ) as progress:
+                progress.add_task(description="Executing...", total=None)
+                exit_code, output = provisioner.run_task(cmd, env=task.env)
+            
+            if exit_code == 0:
+                console.print(f"[green]✓[/green] Command {i} completed")
+            else:
+                console.print(f"[red]✗[/red] Command {i} failed with exit code {exit_code}")
+                if output:
+                    console.print(f"  Output: {output}")
+                raise typer.Exit(1)
+
+        # Summary
+        total_elapsed = time.time() - start_time
+        console.print(f"\n[bold green]✓ Task completed successfully[/bold green]")
+        console.print(f"  Total time: {total_elapsed:.1f}s")
+        console.print(f"  VM ID: {vm_info['vm_id']}")
+        console.print(f"\nTo terminate: minisky terminate {vm_info['vm_id']}")
+
+    except typer.Exit:
+        raise
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         raise typer.Exit(1)
