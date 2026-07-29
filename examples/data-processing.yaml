@@ -1,0 +1,13 @@
+name: data-processing
+provider: mock
+resources:
+  memory_gb: 128
+  disk_gb: 500
+setup:
+  - apt-get update
+  - apt-get install -y ffmpeg imagemagick
+  - pip install pandas numpy pillow
+run:
+  - python process_videos.py --input /data/videos --output /data/processed
+  - python generate_thumbnails.py --input /data/processed
+  - python create_dataset.py --output /data/dataset.tar.gz

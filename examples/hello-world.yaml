@@ -1,0 +1,11 @@
+name: hello-world
+provider: mock
+resources:
+  gpu: A100
+  gpu_count: 1
+  memory_gb: 32
+  disk_gb: 50
+run:
+  - echo "Hello from MiniSky!"
+  - python --version
+  - echo "Task completed successfully"

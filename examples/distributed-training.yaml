@@ -1,0 +1,18 @@
+name: distributed-training
+provider: mock
+resources:
+  gpu: A100
+  gpu_count: 4
+  memory_gb: 256
+  disk_gb: 200
+workdir: ./distributed-training
+setup:
+  - pip install torch torchvision
+  - pip install accelerate deepspeed
+  - pip install -r requirements.txt
+run:
+  - torchrun --nproc_per_node=4 --master_port=29500 train_distributed.py
+  - python merge_checkpoints.py
+env:
+  MASTER_PORT: "29500"
+  NCCL_DEBUG: "INFO"

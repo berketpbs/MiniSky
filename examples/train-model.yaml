@@ -1,0 +1,18 @@
+name: train-model
+provider: mock
+resources:
+  gpu: A100
+  gpu_count: 1
+  memory_gb: 64
+  disk_gb: 100
+workdir: ./training-code
+setup:
+  - pip install torch torchvision torchaudio
+  - pip install transformers datasets
+  - pip install wandb tensorboard
+run:
+  - python train.py --epochs 100 --batch-size 32
+  - python evaluate.py --checkpoint best_model.pt
+env:
+  WANDB_API_KEY: ${WANDB_API_KEY}
+  CUDA_VISIBLE_DEVICES: "0"
