@@ -520,16 +520,21 @@ def exec_cmd(
 @app.command()
 def logs(
     vm_id: str = typer.Argument(..., help="VM ID to view logs"),
-    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Follow log output in real-time"),
     tail: int = typer.Option(50, "--tail", "-n", help="Number of lines to show"),
+    log_file: str = typer.Option("/tmp/minisky_task.log", "--file", help="Remote log file path"),
+    timestamps: bool = typer.Option(True, "--timestamps/--no-timestamps", help="Show timestamps"),
 ):
     """
     View logs from a running task.
+
+    Supports real-time streaming with --follow flag.
 
     Example:
         minisky logs mock-abc123
         minisky logs mock-abc123 --follow
         minisky logs mock-abc123 --tail 100
+        minisky logs mock-abc123 --file /var/log/app.log
     """
     try:
         vm_info = state.get_vm(vm_id)
@@ -537,7 +542,7 @@ def logs(
             console.print(f"[red]VM not found:[/red] {vm_id}")
             raise typer.Exit(1)
 
-        # Try local logs first
+        # Try local logs first (for non-follow mode)
         local_logs = log_manager.read_logs(vm_id, tail=tail)
         if local_logs and not follow:
             console.print(local_logs, end="")
@@ -545,14 +550,27 @@ def logs(
 
         # Stream from remote
         if vm_info['status'] == 'running':
-            console.print(f"[cyan]Streaming logs from {vm_id}...[/cyan]")
-            log_manager.stream_logs(vm_info, follow=follow, tail=tail)
+            from .log_streamer import SSHLogStreamer
+            
+            streamer = SSHLogStreamer(vm_info, [log_file])
+            streamer.stream_to_console(
+                follow=follow,
+                tail=tail,
+                show_timestamps=timestamps
+            )
+            
+            # Also save to local logs
+            if follow:
+                log_manager.write_log(vm_id, f"[Log streaming session ended]")
         else:
             if local_logs:
                 console.print(local_logs, end="")
             else:
                 console.print(f"[yellow]No logs available for {vm_id}[/yellow]")
+                console.print(f"[dim]VM status: {vm_info['status']}[/dim]")
 
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Log streaming stopped[/yellow]")
     except Exception as e:
         console.print(f"[red]Error:[/red] {str(e)}")
         raise typer.Exit(1)
