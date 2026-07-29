@@ -30,6 +30,10 @@ class TestProviderRegistry:
                 return {}
             def terminate(self, vm_id):
                 return True
+            def stop(self, vm_id):
+                return True
+            def start(self, vm_id):
+                return True
             def list_instances(self):
                 return []
 
