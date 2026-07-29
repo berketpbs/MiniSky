@@ -96,6 +96,38 @@ class BaseProvider(ABC):
         pass
     
     @abstractmethod
+    def stop(self, vm_id: str) -> bool:
+        """
+        Stop a VM instance (but keep disk).
+        
+        Args:
+            vm_id: Unique VM identifier
+            
+        Returns:
+            True if stop successful
+            
+        Raises:
+            ProviderError: If stop fails
+        """
+        pass
+    
+    @abstractmethod
+    def start(self, vm_id: str) -> bool:
+        """
+        Start a stopped VM instance.
+        
+        Args:
+            vm_id: Unique VM identifier
+            
+        Returns:
+            True if start successful
+            
+        Raises:
+            ProviderError: If start fails
+        """
+        pass
+    
+    @abstractmethod
     def list_instances(self) -> List[VMInfo]:
         """
         List all active instances managed by this provider.

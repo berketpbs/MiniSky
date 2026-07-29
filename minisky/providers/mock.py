@@ -111,6 +111,54 @@ class MockProvider(BaseProvider):
         del self._instances[vm_id]
         return True
     
+    def stop(self, vm_id: str) -> bool:
+        """
+        Simulate stopping a VM.
+        
+        Args:
+            vm_id: VM identifier
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            ProviderError: If VM not found or not running
+        """
+        self._simulate_api_delay(0.4)
+        
+        if vm_id not in self._instances:
+            raise ProviderError(f"VM not found: {vm_id}")
+        
+        if self._instances[vm_id]['status'] != 'running':
+            raise ProviderError(f"VM {vm_id} is not running (status: {self._instances[vm_id]['status']})")
+        
+        self._instances[vm_id]['status'] = 'stopped'
+        return True
+    
+    def start(self, vm_id: str) -> bool:
+        """
+        Simulate starting a stopped VM.
+        
+        Args:
+            vm_id: VM identifier
+            
+        Returns:
+            True if successful
+            
+        Raises:
+            ProviderError: If VM not found or not stopped
+        """
+        self._simulate_api_delay(0.6)
+        
+        if vm_id not in self._instances:
+            raise ProviderError(f"VM not found: {vm_id}")
+        
+        if self._instances[vm_id]['status'] != 'stopped':
+            raise ProviderError(f"VM {vm_id} is not stopped (status: {self._instances[vm_id]['status']})")
+        
+        self._instances[vm_id]['status'] = 'running'
+        return True
+    
     def list_instances(self) -> List[VMInfo]:
         """
         List all mock instances.
