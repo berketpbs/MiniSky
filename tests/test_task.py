@@ -93,6 +93,13 @@ class TestTask:
         with pytest.raises(Exception):
             Task(name="test", run=[])
 
+    def test_ports_must_be_valid_tcp_ports(self):
+        with pytest.raises(ValueError, match="between 1 and 65535"):
+            Task(name="test", run=["echo"], ports=[0])
+
+        with pytest.raises(ValueError, match="between 1 and 65535"):
+            Task(name="test", run=["echo"], ports=[65536])
+
     def test_from_yaml(self, tmp_path):
         yaml_content = {
             'name': 'yaml-test',
@@ -138,6 +145,12 @@ class TestTask:
         yaml_file = tmp_path / "empty.yaml"
         yaml_file.write_text("")
         with pytest.raises(ValueError):
+            Task.from_yaml(str(yaml_file))
+
+    def test_from_yaml_requires_mapping(self, tmp_path):
+        yaml_file = tmp_path / "scalar.yaml"
+        yaml_file.write_text("just-a-string")
+        with pytest.raises(ValueError, match="must contain a mapping"):
             Task.from_yaml(str(yaml_file))
 
     def test_to_yaml(self, tmp_path):

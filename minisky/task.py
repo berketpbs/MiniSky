@@ -172,6 +172,14 @@ class Task(BaseModel):
                 raise ValueError(f"Workdir is not a directory: {v}")
         return v
 
+    @field_validator('ports')
+    @classmethod
+    def validate_ports(cls, v: Optional[List[int]]) -> Optional[List[int]]:
+        """Require TCP port values that can be used by forwarding tools."""
+        if v is not None and any(port < 1 or port > 65535 for port in v):
+            raise ValueError("Ports must be between 1 and 65535")
+        return v
+
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Task":
         """
@@ -196,6 +204,8 @@ class Task(BaseModel):
 
         if data is None:
             raise ValueError(f"Empty YAML file: {yaml_path}")
+        if not isinstance(data, dict):
+            raise ValueError(f"Task YAML must contain a mapping: {yaml_path}")
 
         # Handle file_mounts shorthand: if value is a string, treat as source
         if 'file_mounts' in data and isinstance(data['file_mounts'], dict):
