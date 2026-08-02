@@ -77,7 +77,7 @@ def test_execute_command(mock_rsa, mock_ssh_client, mock_vm_info):
     called_command = args[0]
     
     # Verify workdir chaining
-    assert called_command.startswith("cd ~/workdir &&")
+    assert called_command.startswith("cd '~/workdir' &&")
     # Verify environment quoting
     assert "TEST_VAR='hello world'" in called_command
     # Verify the actual command

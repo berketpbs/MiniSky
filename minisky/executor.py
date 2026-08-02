@@ -150,7 +150,7 @@ class Executor:
 
             # Change to workdir if specified
             if workdir:
-                full_command = f"cd {workdir} && {full_command}"
+                full_command = f"cd {shlex.quote(workdir)} && {full_command}"
 
             # Execute command
             stdin, stdout, stderr = self.ssh_client.exec_command(full_command)
