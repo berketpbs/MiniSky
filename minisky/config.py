@@ -6,6 +6,8 @@ Stores provider API keys, default settings, and user preferences.
 """
 
 import copy
+import os
+import tempfile
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -104,8 +106,24 @@ class MiniSkyConfig:
     def _save(self):
         """Write current config state to disk."""
         self._config_dir.mkdir(parents=True, exist_ok=True)
-        with open(self._config_path, 'w') as f:
-            yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
+        fd, temp_path = tempfile.mkstemp(
+            dir=self._config_dir,
+            prefix=f".{self._config_path.name}.",
+            suffix=".tmp",
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                yaml.dump(self._data, f, default_flow_style=False, sort_keys=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self._config_path)
+        except Exception:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+            raise
 
     def get(self, key: str, default: Any = None) -> Any:
         """
