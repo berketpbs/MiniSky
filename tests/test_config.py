@@ -14,6 +14,12 @@ def tmp_config(tmp_path):
 
 
 class TestMiniSkyConfig:
+    def test_loads_utf8_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("default_provider: mock\n", encoding="utf-8")
+
+        assert MiniSkyConfig(config_path=str(config_path)).get("default_provider") == "mock"
+
     def test_rejects_non_mapping_config(self, tmp_path):
         config_path = tmp_path / "config.yaml"
         config_path.write_text("- invalid\n- shape\n")

@@ -91,7 +91,7 @@ class MiniSkyConfig:
     def _load(self) -> Dict[str, Any]:
         """Load config from disk, merging with defaults."""
         if self._config_path.exists():
-            with open(self._config_path, 'r') as f:
+            with open(self._config_path, 'r', encoding='utf-8') as f:
                 user_data = yaml.safe_load(f) or {}
         else:
             user_data = {}
