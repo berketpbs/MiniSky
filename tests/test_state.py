@@ -116,6 +116,10 @@ class TestStateManager:
         vms = state_mgr.list_vms()
         assert vms == []
 
+    def test_cleanup_rejects_negative_age(self, state_mgr):
+        with pytest.raises(ValueError, match="older_than_days"):
+            state_mgr.cleanup_terminated(older_than_days=-1)
+
 
 class TestClusterPersistence:
     """Tests for the API server's cluster persistence methods."""

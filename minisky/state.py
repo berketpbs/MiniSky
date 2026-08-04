@@ -236,6 +236,9 @@ class StateManager:
         Returns:
             Number of VMs removed
         """
+        if older_than_days < 0:
+            raise ValueError("older_than_days must be non-negative")
+
         with self._get_connection() as conn:
             cursor = conn.execute('''
                 DELETE FROM vms
