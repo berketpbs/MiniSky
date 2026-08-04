@@ -13,7 +13,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 import minisky.api.core as core_module
-from minisky.api.server import app
+from minisky.api.server import app, ClusterCreateRequest, JobSubmitRequest
 from minisky.api.core import (
     Event,
     EventBus,
@@ -181,6 +181,20 @@ class TestCORSConfig:
         kwargs = cors_middleware.kwargs
         if kwargs.get("allow_origins") == ["*"]:
             assert kwargs.get("allow_credentials", False) is False
+
+
+class TestRequestValidation:
+    def test_cluster_request_rejects_invalid_bounds(self):
+        with pytest.raises(ValueError):
+            ClusterCreateRequest(name="", num_nodes=0)
+        with pytest.raises(ValueError):
+            ClusterCreateRequest(name="cluster", autostop_minutes=0)
+
+    def test_job_request_rejects_empty_payload_fields(self):
+        with pytest.raises(ValueError):
+            JobSubmitRequest(name="job", task_yaml="", entrypoint="run.sh")
+        with pytest.raises(ValueError):
+            JobSubmitRequest(name="job", task_yaml="run: []", entrypoint="", max_restarts=-1)
 
 
 class TestClusterControllerRealProviderWiring:

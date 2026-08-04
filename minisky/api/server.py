@@ -19,7 +19,7 @@ ensure_utf8_console()
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from minisky.api.core import (
     ClusterRecord,
@@ -74,12 +74,12 @@ app.add_middleware(
 # =============================================================================
 
 class ClusterCreateRequest(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=128)
     provider: str = "mock"
-    num_nodes: int = 1
+    num_nodes: int = Field(1, ge=1)
     instance_type: Optional[str] = None
     accelerators: Optional[Dict[str, int]] = None
-    autostop_minutes: Optional[int] = None
+    autostop_minutes: Optional[int] = Field(None, ge=1)
 
 
 class ClusterResponse(BaseModel):
@@ -119,12 +119,12 @@ class ClusterResponse(BaseModel):
 
 
 class JobSubmitRequest(BaseModel):
-    name: str
-    task_yaml: str
-    entrypoint: str
+    name: str = Field(..., min_length=1, max_length=128)
+    task_yaml: str = Field(..., min_length=1)
+    entrypoint: str = Field(..., min_length=1, max_length=4096)
     cluster_id: Optional[str] = None
     spot_recovery: bool = False
-    max_restarts: int = 0
+    max_restarts: int = Field(0, ge=0)
 
 
 class JobResponse(BaseModel):
