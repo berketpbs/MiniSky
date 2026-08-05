@@ -7,6 +7,7 @@ and local log file persistence under ~/.minisky/logs/.
 
 import time
 import threading
+import shlex
 from pathlib import Path
 from typing import Optional, Callable
 from datetime import datetime
@@ -89,6 +90,7 @@ class LogManager:
 
         return ''.join(lines)
 
+
     def stream_logs(
         self,
         vm_info: dict,
@@ -107,6 +109,9 @@ class LogManager:
             log_file: Remote log file path to read
             on_line: Optional callback for each log line
         """
+        if tail < 0:
+            raise ValueError("tail must be non-negative")
+
         ssh_client = None
         try:
             ssh_client = paramiko.SSHClient()
@@ -132,10 +137,12 @@ class LogManager:
 
             ssh_client.connect(**connect_kwargs)
 
+            quoted_tail = shlex.quote(str(tail))
+            quoted_log_file = shlex.quote(log_file)
             if follow:
-                cmd = f"tail -n {tail} -f {log_file} 2>/dev/null"
+                cmd = f"tail -n {quoted_tail} -f {quoted_log_file} 2>/dev/null"
             else:
-                cmd = f"tail -n {tail} {log_file} 2>/dev/null"
+                cmd = f"tail -n {quoted_tail} {quoted_log_file} 2>/dev/null"
 
             stdin, stdout, stderr = ssh_client.exec_command(cmd)
 

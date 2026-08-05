@@ -136,6 +136,22 @@ class TestStreamLogs:
         assert "tail -n 20" in cmd_arg
 
     @patch("minisky.logger.paramiko.SSHClient")
+    def test_stream_logs_quotes_remote_log_path(self, mock_ssh_cls, log_manager):
+        mock_client = MagicMock()
+        mock_ssh_cls.return_value = mock_client
+        mock_client.exec_command.return_value = (MagicMock(), iter([]), iter([]))
+        vm_info = {"ip_address": "10.0.0.1", "vm_id": "vm-1"}
+
+        log_manager.stream_logs(vm_info, log_file="/tmp/task;id.log")
+
+        cmd_arg = mock_ssh_cls.return_value.exec_command.call_args.args[0]
+        assert "'/tmp/task;id.log'" in cmd_arg
+
+    def test_stream_logs_rejects_negative_tail(self, log_manager):
+        with pytest.raises(ValueError, match="non-negative"):
+            log_manager.stream_logs({"ip_address": "10.0.0.1"}, tail=-1)
+
+    @patch("minisky.logger.paramiko.SSHClient")
     def test_stream_logs_with_key_path(self, mock_ssh_cls, log_manager):
         mock_client = MagicMock()
         mock_ssh_cls.return_value = mock_client
