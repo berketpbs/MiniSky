@@ -16,6 +16,13 @@ from minisky.executor import Executor, ExecutorError
 from minisky.provisioner import Provisioner, ProvisionConfig, ProvisionState, ProvisionResult
 
 
+def test_provision_config_rejects_invalid_timeouts():
+    with pytest.raises(ValueError, match="ssh_timeout"):
+        ProvisionConfig(ssh_timeout=0)
+    with pytest.raises(ValueError, match="run_timeout"):
+        ProvisionConfig(run_timeout=-1)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

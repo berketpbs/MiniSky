@@ -63,6 +63,16 @@ class ProvisionConfig:
     stream_logs: bool = True
     log_callback: Optional[Callable[[str], None]] = None
 
+    def __post_init__(self):
+        if self.ssh_timeout <= 0:
+            raise ValueError("ssh_timeout must be greater than zero")
+        if self.ssh_retry_interval < 0:
+            raise ValueError("ssh_retry_interval must be non-negative")
+        if self.setup_timeout <= 0:
+            raise ValueError("setup_timeout must be greater than zero")
+        if self.run_timeout < 0:
+            raise ValueError("run_timeout must be non-negative")
+
 
 class SSHKeyManager:
     """
