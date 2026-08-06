@@ -13,6 +13,7 @@ import asyncio
 import time
 import threading
 import queue
+import shlex
 from pathlib import Path
 from typing import Optional, Callable, List, Dict, Any, AsyncIterator
 from dataclasses import dataclass, field
@@ -511,12 +512,15 @@ def create_log_file_on_remote(
         }
         
         if key_path:
+            connect_kwargs['key_filename'] = key_path
+        else:
             connect_kwargs['look_for_keys'] = True
         
         client.connect(**connect_kwargs)
         
         # Create log file with header
-        cmd = f"touch {log_file} && echo '=== MiniSky Task Log ===' >> {log_file}"
+        quoted_log_file = shlex.quote(log_file)
+        cmd = f"touch {quoted_log_file} && echo '=== MiniSky Task Log ===' >> {quoted_log_file}"
         stdin, stdout, stderr = client.exec_command(cmd)
         stdout.read()  # Wait for completion
         

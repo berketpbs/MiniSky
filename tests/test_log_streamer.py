@@ -9,11 +9,13 @@ import queue
 import threading
 import time
 from datetime import datetime
+from unittest.mock import MagicMock, patch
 from minisky.log_streamer import (
     LogLine,
     LogLevel,
     LogBuffer,
     SSHLogStreamer,
+    create_log_file_on_remote,
     stream_logs_cli,
 )
 
@@ -205,6 +207,22 @@ class TestSSHLogStreamer:
         custom_buffer = LogBuffer(max_size=100)
         streamer = SSHLogStreamer(vm_info, buffer=custom_buffer)
         assert streamer.buffer is custom_buffer
+
+    @patch("minisky.log_streamer.paramiko.SSHClient")
+    def test_create_log_file_quotes_path_and_uses_explicit_key(self, mock_ssh_cls):
+        mock_client = MagicMock()
+        mock_ssh_cls.return_value = mock_client
+        mock_client.exec_command.return_value = (MagicMock(), MagicMock(), MagicMock())
+
+        result = create_log_file_on_remote(
+            {"ip_address": "10.0.0.1", "ssh_key_path": "/keys/id_ed25519"},
+            log_file="/tmp/task;id.log",
+        )
+
+        assert result is True
+        assert mock_client.connect.call_args.kwargs["key_filename"] == "/keys/id_ed25519"
+        assert "'/tmp/task;id.log'" in mock_client.exec_command.call_args.args[0]
+        assert "look_for_keys" not in mock_client.connect.call_args.kwargs
 
     def test_start_creates_threads(self):
         """Start should create daemon threads (we stop immediately)."""
