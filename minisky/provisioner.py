@@ -130,7 +130,8 @@ class SSHKeyManager:
                 "-C", "minisky-generated"
             ], check=True, capture_output=True)
         except subprocess.CalledProcessError as e:
-            raise RuntimeError(f"Failed to generate SSH key: {e.stderr.decode()}")
+            details = e.stderr.decode('utf-8', errors='replace') if e.stderr else "unknown error"
+            raise RuntimeError(f"Failed to generate SSH key: {details}") from e
         except FileNotFoundError:
             raise RuntimeError("ssh-keygen not found. Please install OpenSSH.")
         
