@@ -81,6 +81,16 @@ class SSHConfig:
     server_alive_interval: int = 60
     strict_host_key_checking: bool = False
 
+    def __post_init__(self):
+        if not self.host:
+            raise ValueError("host must not be empty")
+        if not 1 <= self.port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        if self.connect_timeout <= 0:
+            raise ValueError("connect_timeout must be greater than zero")
+        if self.server_alive_interval < 0:
+            raise ValueError("server_alive_interval must be non-negative")
+
 
 class SSHManager:
     """

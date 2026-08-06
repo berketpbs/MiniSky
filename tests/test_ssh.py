@@ -90,6 +90,12 @@ class TestSSHConfig:
         assert config.user == "ubuntu"
         assert config.key_path == "~/.ssh/id_ed25519"
 
+    def test_config_rejects_invalid_connection_values(self):
+        with pytest.raises(ValueError, match="port"):
+            SSHConfig(host="host", port=0)
+        with pytest.raises(ValueError, match="host"):
+            SSHConfig(host="")
+
 
 # ---------------------------------------------------------------------------
 # SSHManager command building tests
