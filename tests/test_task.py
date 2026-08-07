@@ -93,6 +93,10 @@ class TestTask:
         with pytest.raises(Exception):
             Task(name="test", run=[])
 
+    def test_environment_variable_names_are_shell_safe(self):
+        with pytest.raises(ValueError, match="Invalid environment variable name"):
+            Task(name="test", run=["echo"], env={"BAD-NAME": "value"})
+
     def test_ports_must_be_valid_tcp_ports(self):
         with pytest.raises(ValueError, match="between 1 and 65535"):
             Task(name="test", run=["echo"], ports=[0])

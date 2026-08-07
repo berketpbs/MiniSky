@@ -9,6 +9,7 @@ and port forwarding configuration.
 
 from typing import List, Dict, Optional
 from pathlib import Path
+import re
 from pydantic import BaseModel, Field, field_validator
 import yaml
 
@@ -180,6 +181,16 @@ class Task(BaseModel):
             raise ValueError("Ports must be between 1 and 65535")
         return v
 
+    @field_validator('env')
+    @classmethod
+    def validate_env_keys(cls, v: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+        """Allow only portable shell environment variable names."""
+        if v is not None:
+            invalid = [key for key in v if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key)]
+            if invalid:
+                raise ValueError(f"Invalid environment variable name: {invalid[0]}")
+        return v
+
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Task":
         """
@@ -199,7 +210,7 @@ class Task(BaseModel):
         if not path.exists():
             raise FileNotFoundError(f"Task file not found: {yaml_path}")
 
-        with open(path, 'r') as f:
+        with open(path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
 
         if data is None:
@@ -230,5 +241,5 @@ class Task(BaseModel):
         Args:
             yaml_path: Path to save YAML file
         """
-        with open(yaml_path, 'w') as f:
+        with open(yaml_path, 'w', encoding='utf-8') as f:
             yaml.dump(self.model_dump(exclude_none=True), f, default_flow_style=False)
