@@ -14,6 +14,13 @@ def tmp_config(tmp_path):
 
 
 class TestMiniSkyConfig:
+    def test_rejects_non_mapping_config(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("- invalid\n- shape\n")
+
+        with pytest.raises(ValueError, match="must contain a mapping"):
+            MiniSkyConfig(config_path=str(config_path)).get("default_provider")
+
     """Tests for MiniSkyConfig class."""
 
     def test_defaults_loaded(self, tmp_config):

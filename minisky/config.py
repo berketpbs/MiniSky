@@ -96,6 +96,9 @@ class MiniSkyConfig:
         else:
             user_data = {}
 
+        if not isinstance(user_data, dict):
+            raise ValueError(f"Configuration must contain a mapping: {self._config_path}")
+
         return _deep_merge(_DEFAULTS, user_data)
 
     def _ensure_loaded(self):
