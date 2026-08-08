@@ -94,6 +94,10 @@ class TestReadLogs:
         assert "a" in result
         assert "b" in result
 
+    def test_read_logs_rejects_negative_tail(self, log_manager):
+        with pytest.raises(ValueError, match="non-negative"):
+            log_manager.read_logs("vm-1", tail=-1)
+
 
 class TestStreamLogs:
     @patch("minisky.logger.paramiko.SSHClient")

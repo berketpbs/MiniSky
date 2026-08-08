@@ -78,6 +78,9 @@ class LogManager:
         Returns:
             Log content as string
         """
+        if tail < 0:
+            raise ValueError("tail must be non-negative")
+
         log_path = self.get_log_path(vm_id)
         if not log_path.exists():
             return ""
