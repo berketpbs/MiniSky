@@ -56,14 +56,14 @@ class CredentialManager:
         env_var = self._ENV_VARS.get(provider)
         if env_var:
             env_value = os.environ.get(env_var)
-            if env_value:
-                return env_value
+            if env_value and env_value.strip():
+                return env_value.strip()
 
         # 2. Check config file
         config_key = f"providers.{provider}.api_key"
         config_value = self._config.get(config_key)
-        if config_value:
-            return config_value
+        if isinstance(config_value, str) and config_value.strip():
+            return config_value.strip()
 
         return None
 

@@ -21,6 +21,12 @@ def creds(config):
 
 
 class TestGetApiKey:
+    def test_whitespace_is_not_a_credential(self, creds, config):
+        config.set("providers.runpod.api_key", "  config-key  ")
+
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": "   "}):
+            assert creds.get_api_key("runpod") == "config-key"
+
     def test_from_env_variable(self, creds):
         with patch.dict(os.environ, {"RUNPOD_API_KEY": "env-key-12345"}):
             key = creds.get_api_key("runpod")
