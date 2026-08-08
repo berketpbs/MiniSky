@@ -163,6 +163,10 @@ class TestSSHManager:
         assert "-N" in cmd
         assert "-f" in cmd
 
+    def test_connect_rejects_negative_retries(self, ssh_manager):
+        with pytest.raises(ValueError, match="max_retries"):
+            ssh_manager.connect(max_retries=-1)
+
 
 # ---------------------------------------------------------------------------
 # Common ports tests

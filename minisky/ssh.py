@@ -204,6 +204,9 @@ class SSHManager:
         Returns:
             Exit code
         """
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
+
         cmd = self._build_ssh_command(command, port_forwards, extra_args)
         
         if command:
