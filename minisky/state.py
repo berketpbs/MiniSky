@@ -96,6 +96,15 @@ class StateManager:
             yield conn
         finally:
             conn.close()
+
+    @staticmethod
+    def _vm_from_row(row: sqlite3.Row) -> Dict[str, Any]:
+        """Convert a SQLite VM row and merge its persisted metadata."""
+        vm_info = dict(row)
+        if vm_info['metadata']:
+            vm_info.update(json.loads(vm_info['metadata']))
+        del vm_info['metadata']
+        return vm_info
     
     def add_vm(self, vm_info: Dict[str, Any]) -> None:
         """
@@ -150,14 +159,7 @@ class StateManager:
             if row is None:
                 return None
             
-            vm_info = dict(row)
-            # Parse metadata JSON
-            if vm_info['metadata']:
-                metadata = json.loads(vm_info['metadata'])
-                vm_info.update(metadata)
-            del vm_info['metadata']
-            
-            return vm_info
+            return self._vm_from_row(row)
     
     def list_vms(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """
@@ -182,12 +184,7 @@ class StateManager:
             
             vms = []
             for row in cursor.fetchall():
-                vm_info = dict(row)
-                if vm_info['metadata']:
-                    metadata = json.loads(vm_info['metadata'])
-                    vm_info.update(metadata)
-                del vm_info['metadata']
-                vms.append(vm_info)
+                vms.append(self._vm_from_row(row))
             
             return vms
     

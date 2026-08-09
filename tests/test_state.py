@@ -100,6 +100,18 @@ class TestStateManager:
         assert result['custom_field'] == 'custom_value'
         assert result['gpu_type'] == 'A100'
 
+    def test_list_vms_merges_metadata(self, state_mgr):
+        state_mgr.add_vm({
+            'vm_id': 'listed-vm',
+            'provider': 'mock',
+            'task_name': 'listed',
+            'ip_address': '127.0.0.1',
+            'status': 'running',
+            'custom_field': 'value',
+        })
+
+        assert state_mgr.list_vms()[0]['custom_field'] == 'value'
+
     def test_empty_list(self, state_mgr):
         vms = state_mgr.list_vms()
         assert vms == []
