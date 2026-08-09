@@ -203,6 +203,8 @@ class Executor:
             
             if not local_dir.exists():
                 raise ExecutorError(f"Local directory does not exist: {local_path}")
+            if not local_dir.is_dir():
+                raise ExecutorError(f"Local path is not a directory: {local_path}")
             
             # Normalize remote path if it starts with ~
             if remote_path.startswith('~/'):

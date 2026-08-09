@@ -192,3 +192,15 @@ def test_sync_files(mock_rsa, mock_ssh_client, mock_vm_info, tmp_path):
     mock_sftp.put.assert_called_once()
     args, _ = mock_sftp.put.call_args
     assert "/home/root/remote_workdir" in args[1]
+
+
+@patch('paramiko.SSHClient')
+@patch('paramiko.RSAKey.from_private_key_file')
+def test_sync_files_rejects_file_path(mock_rsa, mock_ssh_client, mock_vm_info, tmp_path):
+    executor = Executor(mock_vm_info)
+    executor.sftp_client = MagicMock()
+    local_file = tmp_path / "file.txt"
+    local_file.write_text("data")
+
+    with pytest.raises(ExecutorError, match="not a directory"):
+        executor.sync_files(str(local_file))
