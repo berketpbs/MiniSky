@@ -37,6 +37,12 @@ class TestFileMountParsing:
         with pytest.raises(ValueError, match="include a bucket"):
             FileMount(local_path="/data", source="s3:///missing")
 
+    def test_rejects_empty_mount_paths(self):
+        with pytest.raises(ValueError, match="local_path"):
+            FileMount(local_path="", source="./data")
+        with pytest.raises(ValueError, match="source"):
+            FileMount(local_path="/data", source="")
+
     def test_parse_file_mounts_simple_and_full_format(self):
         mounts = parse_file_mounts({
             "/data": "s3://bucket/data",

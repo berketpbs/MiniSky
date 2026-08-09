@@ -54,7 +54,11 @@ class FileMount:
     provider: Optional[StorageProvider] = None
     
     def __post_init__(self):
-        """Detect provider from source URI."""
+        """Detect provider from source URI and validate mount fields."""
+        if not self.local_path:
+            raise ValueError("local_path must not be empty")
+        if not self.source:
+            raise ValueError("source must not be empty")
         if self.provider is None:
             if self.source.startswith("s3://"):
                 self.provider = StorageProvider.S3
