@@ -167,7 +167,9 @@ class SSHManager:
         self,
         command: Optional[str] = None,
         port_forwards: Optional[List[PortForward]] = None,
-        extra_args: Optional[List[str]] = None
+        extra_args: Optional[List[str]] = None,
+        auto_reconnect: bool = False,
+        max_retries: int = 3
     ) -> int:
         """
         Open SSH connection (interactive or run command).
@@ -176,30 +178,43 @@ class SSHManager:
             command: Optional command to run (interactive if None)
             port_forwards: List of port forwards
             extra_args: Additional SSH arguments
+            auto_reconnect: Whether to automatically reconnect on connection drop
+            max_retries: Maximum number of reconnection attempts
             
         Returns:
             Exit code
         """
         cmd = self._build_ssh_command(command, port_forwards, extra_args)
         
-        console.print(f"[cyan]Connecting to {self.ssh_config.host}...[/cyan]")
-        
         if command:
-            console.print(f"[dim]Running: {command}[/dim]")
+            console.print(f"[dim]Running on {self.ssh_config.host}: {command}[/dim]")
         else:
+            console.print(f"[cyan]Connecting to {self.ssh_config.host}...[/cyan]")
             console.print("[dim]Starting interactive session[/dim]")
         
         if port_forwards:
             for pf in port_forwards:
                 console.print(f"[green]✓[/green] Port forward: localhost:{pf.local_port} -> {pf.remote_host}:{pf.remote_port}")
         
-        # Run SSH
-        try:
-            result = subprocess.run(cmd)
-            return result.returncode
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Connection closed[/yellow]")
-            return 0
+        # Run SSH with retry loop
+        retries = 0
+        while True:
+            try:
+                result = subprocess.run(cmd)
+                
+                # Exit code 255 usually means SSH connection error/dropped
+                if result.returncode == 255 and auto_reconnect and retries < max_retries:
+                    retries += 1
+                    console.print(f"\n[yellow]Connection dropped (Code 255). Reconnecting (Attempt {retries}/{max_retries})...[/yellow]")
+                    import time
+                    time.sleep(2)
+                    continue
+                    
+                return result.returncode
+                
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Connection closed[/yellow]")
+                return 0
     
     def forward_ports(
         self,

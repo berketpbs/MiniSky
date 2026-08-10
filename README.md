@@ -1,109 +1,78 @@
 # MiniSky
 
-A lightweight, open-source cloud orchestration tool inspired by SkyPilot. Launch and manage GPU instances across various cloud providers with a simple YAML interface.
+Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine learning and data science workloads easily on multiple cloud providers (RunPod, Lambda Cloud) with a single command.
 
 ## Features
+- **Multi-Cloud Support**: Deploy to RunPod, Lambda Cloud, or use the Mock provider for testing.
+- **Cost Optimizer**: Automatically selects the cheapest provider for your requirements.
+- **File Synchronization**: Automatically sync local directories (`workdir`) to remote VMs.
+- **Managed Jobs**: Automatic recovery from spot instance preemptions.
+- **CLI & Web Dashboard**: Manage your instances from terminal or a Vue.js web UI.
 
-- **YAML Interface**: Define tasks, resources, and environment variables in a clean, readable declarative format.
-- **Provider Agnostic**: Native support for multiple cloud environments including local mock testing, with architecture designed for RunPod and Lambda Cloud integration.
-- **State Management**: Persistent local VM tracking and state management using SQLite.
-- **SSH Execution**: Seamless remote command execution, automated environment setup, and SFTP file synchronization via Paramiko.
-- **CLI Dashboard**: Rich, interactive terminal output with progress indicators, built on Typer and Rich.
-- **Local Simulation**: Built-in mock provider for end-to-end testing without incurring cloud infrastructure costs.
+## Installation
+
+```bash
+pip install minisky
+```
 
 ## Quick Start
 
-### 1. Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/minisky.git
-cd minisky
-
-# Install using uv (Recommended)
-uv pip install -e .
-```
-
-### 2. Define a Task
-
-Create a file named `task.yaml`:
-
+1. Set up your cloud credentials in `~/.minisky/config.yaml`:
 ```yaml
-name: model-training
-provider: mock
-resources:
-  gpu: A100
-  gpu_count: 1
-  memory_gb: 32
-  disk_gb: 50
-workdir: ./my-project
-setup:
-  - pip install -r requirements.txt
-run:
-  - python train.py --epochs 100
-env:
-  WANDB_API_KEY: ${WANDB_API_KEY}
+providers:
+  runpod:
+    api_key: "YOUR_RUNPOD_KEY"
+  lambda:
+    api_key: "YOUR_LAMBDA_KEY"
 ```
 
-### 3. Launch and Manage
+2. Create a task YAML file (`task.yaml`):
+```yaml
+name: my-training-job
+resources:
+  gpu: "A100"
+  gpu_count: 1
+  disk_gb: 100
+workdir: ./src
+run:
+  - python train.py
+```
+
+3. Launch your task:
+```bash
+minisky launch task.yaml
+```
+
+## Advanced CLI Commands
 
 ```bash
-# Launch the instance and execute the task
-minisky launch task.yaml
-
-# Check the status of all active instances
+# Check status of running VMs
 minisky status
 
-# Terminate an instance when finished
-minisky terminate mock-abc123
+# Forward ports (e.g. Jupyter or Tensorboard)
+minisky port-forward <vm-id> jupyter tensorboard
+
+# Open interactive SSH session
+minisky ssh <vm-id>
+
+# Run command remotely
+minisky exec <vm-id> "nvidia-smi"
+
+# View logs
+minisky logs <vm-id> -f
+
+# Add job to queue
+minisky queue add <vm-id> "python evaluate.py"
+
+# Terminate VM
+minisky terminate <vm-id>
 ```
 
-## CLI Reference
+## Development
 
-- `minisky launch <file> [--detach]`: Launch a task on a remote VM. Use `--detach` to run without waiting for completion.
-- `minisky status [id]`: View the status of a specific VM or list all active VMs.
-- `minisky terminate <id> [--force]`: Terminate a running VM instance and clean up state.
-- `minisky logs <id> [--follow]`: Stream logs from a running task (Planned).
-
-## Architecture
-
-- **CLI Layer**: Built with Typer for command parsing and Rich for terminal rendering.
-- **Task Parser**: YAML configuration parsing and strict validation using Pydantic models.
-- **State Manager**: Local SQLite database (`~/.minisky/state.db`) for tracking VM metadata and lifecycle states.
-- **Provider Layer**: Hexagonal abstract provider interface. Currently implements `mock.py` for local simulation.
-- **Executor**: SSH and SFTP orchestration using Paramiko for reliable remote command execution and workspace synchronization.
-
-## Roadmap
-
-- Core Architecture & State Management (Completed)
-- YAML Parser & Basic CLI (Completed)
-- Mock Provider (Completed)
-- SSH Executor (In Progress)
-- RunPod Provider Integration (Planned)
-- Lambda Cloud Provider Integration (Planned)
-- Log Streaming & Cost Tracking (Planned)
-- Multi-node Task Support (Planned)
-
-## Development & Testing
-
-Setup the development environment and run the test suite:
-
+Use `uv` to install dependencies and run tests:
 ```bash
-# Install development dependencies
-uv pip install -e ".[dev]"
-
-# Run unit and integration tests
-pytest
-
-# Run with coverage report
-pytest --cov=minisky --cov-report=html
-
-# Code formatting and linting
-black minisky/ tests/
-ruff check minisky/ tests/
-mypy minisky/
+uv venv
+uv pip sync pyproject.toml
+uv run pytest tests/
 ```
-
-## License
-
-This project is licensed under the MIT License. See the LICENSE file for details.

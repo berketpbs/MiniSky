@@ -101,10 +101,13 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useApi } from '../composables/useApi'
+import { useWebSocket } from '../composables/useWebSocket'
 
 const { listClusters, listJobs } = useApi()
+const wsUrl = `ws://${window.location.hostname}:8000/v1/ws`
+const { lastMessage, isConnected } = useWebSocket(wsUrl)
 
 const clusters = ref([])
 const jobs = ref([])
@@ -142,12 +145,38 @@ function jobStateClass(state) {
   return classes[state] || 'bg-gray-500 text-white'
 }
 
-onMounted(async () => {
+// Watch for WebSocket events
+watch(lastMessage, (event) => {
+  if (!event) return
+  
+  if (event.type === 'cluster_state_change') {
+    const idx = clusters.value.findIndex(c => c.cluster_id === event.payload.cluster_id)
+    if (idx !== -1) {
+      clusters.value[idx].state = event.payload.new_state
+    } else {
+      // Fetch full list again if it's a new cluster
+      loadData()
+    }
+  } else if (event.type === 'job_state_change') {
+    const idx = jobs.value.findIndex(j => j.job_id === event.payload.job_id)
+    if (idx !== -1) {
+      jobs.value[idx].state = event.payload.new_state
+    } else {
+      loadData()
+    }
+  }
+})
+
+async function loadData() {
   try {
     clusters.value = await listClusters()
     jobs.value = await listJobs()
   } catch (e) {
     console.error('Failed to load data:', e)
   }
+}
+
+onMounted(() => {
+  loadData()
 })
 </script>

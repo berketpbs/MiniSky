@@ -929,6 +929,114 @@ def rsync(
         raise typer.Exit(1)
 
 
+# --- Cost Report ---
+
+@app.command(name="cost-report")
+def cost_report():
+    """
+    Generate a detailed cost report for all VMs.
+
+    Example:
+        minisky cost-report
+    """
+    from .price_fetcher import PriceFetcher
+    
+    fetcher = PriceFetcher()
+    vms = state.list_vms()
+    
+    if not vms:
+        console.print("[yellow]No VMs found to report costs for.[/yellow]")
+        return
+        
+    table = Table(title="Cost Report")
+    table.add_column("VM ID", style="cyan")
+    table.add_column("Provider", style="blue")
+    table.add_column("Type", style="magenta")
+    table.add_column("Runtime (h)", style="white", justify="right")
+    table.add_column("Rate/hr", style="green", justify="right")
+    table.add_column("Total Cost", style="bold green", justify="right")
+    
+    total_cost = 0.0
+    
+    for vm in vms:
+        provider = vm.get('provider', 'unknown')
+        instance_type = vm.get('instance_type', 'unknown')
+        
+        # Calculate runtime based on launched_at if running, or 0 if stopped without history
+        # (This is simplified. In a real app we'd track cumulative runtime.)
+        runtime_h = 0.0
+        if vm.get('status') == 'running' and 'launched_at' in vm:
+            import datetime
+            launched_at_timestamp = vm['launched_at']
+            if isinstance(launched_at_timestamp, str):
+                try:
+                    launched_dt = datetime.datetime.fromisoformat(launched_at_timestamp)
+                    runtime_h = (datetime.datetime.utcnow() - launched_dt).total_seconds() / 3600.0
+                except ValueError:
+                    pass
+            elif isinstance(launched_at_timestamp, (int, float)):
+                 runtime_h = (time.time() - launched_at_timestamp) / 3600.0
+        
+        rate = fetcher.get_price(provider, instance_type) or 0.0
+        cost = runtime_h * rate
+        total_cost += cost
+        
+        table.add_row(
+            vm['vm_id'][:12],
+            provider,
+            instance_type,
+            f"{runtime_h:.2f}",
+            f"${rate:.3f}",
+            f"${cost:.3f}"
+        )
+        
+    table.add_row("", "", "", "", "Total:", f"[bold green]${total_cost:.3f}[/bold green]")
+    console.print(table)
+
+
+# --- Cluster ---
+
+cluster_app = typer.Typer(help="Multi-node cluster management")
+app.add_typer(cluster_app, name="cluster")
+
+@cluster_app.command("launch")
+def cluster_launch(
+    task_file: str = typer.Argument(..., help="Path to task YAML file"),
+    num_nodes: int = typer.Option(2, "--nodes", "-n", help="Number of nodes to launch"),
+):
+    """
+    Launch a multi-node cluster.
+    """
+    console.print(f"[cyan]Launching {num_nodes}-node cluster using {task_file}...[/cyan]")
+    # Placeholder for actual cluster.py integration
+    console.print("[yellow]Cluster logic is mock-implemented for this CLI endpoint.[/yellow]")
+
+@cluster_app.command("status")
+def cluster_status(
+    cluster_id: str = typer.Argument(..., help="Cluster ID"),
+):
+    """
+    Check status of a cluster.
+    """
+    console.print(f"[cyan]Status for cluster: {cluster_id}[/cyan]")
+    # Placeholder for actual cluster.py integration
+
+@cluster_app.command("terminate")
+def cluster_terminate(
+    cluster_id: str = typer.Argument(..., help="Cluster ID to terminate"),
+    force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
+):
+    """
+    Terminate a multi-node cluster.
+    """
+    if not force:
+        if not typer.confirm(f"Terminate cluster {cluster_id}?"):
+            console.print("[yellow]Cancelled[/yellow]")
+            return
+    console.print(f"[red]Terminating cluster {cluster_id}...[/red]")
+    # Placeholder for actual cluster.py integration
+
+
 # --- Queue ---
 
 queue_app = typer.Typer(help="Job queue management")
