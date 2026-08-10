@@ -104,3 +104,10 @@ class TestMockProvider:
 
     def test_validate_resources(self, provider, sample_task):
         assert provider.validate_resources(sample_task) is True
+
+    def test_state_file_is_written_as_valid_json(self, provider, sample_task):
+        provider.launch(sample_task)
+
+        state = provider._state_file.read_text(encoding="utf-8")
+        assert state.lstrip().startswith("{")
+        assert len(provider._instances) == 1

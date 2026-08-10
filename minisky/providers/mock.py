@@ -6,6 +6,8 @@ or launching actual VMs. Perfect for development and testing.
 """
 
 import json
+import os
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -50,14 +52,27 @@ class MockProvider(BaseProvider):
         return {}
 
     def _save(self):
-        """Persist instance state. Best-effort, like this codebase's
-        other local caches (e.g. catalog.py's GPU price cache) - a write
-        failure here shouldn't break the operation that triggered it."""
+        """Persist instance state without exposing a partial JSON file."""
+        temp_path = None
         try:
             self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            self._state_file.write_text(json.dumps(self._instances, indent=2))
+            fd, temp_path = tempfile.mkstemp(
+                dir=self._state_file.parent,
+                prefix=f".{self._state_file.name}.",
+                suffix=".tmp",
+                text=True,
+            )
+            with os.fdopen(fd, 'w', encoding='utf-8') as state_file:
+                json.dump(self._instances, state_file, indent=2)
+                state_file.flush()
+                os.fsync(state_file.fileno())
+            os.replace(temp_path, self._state_file)
         except OSError:
-            pass
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
     
     def _generate_vm_id(self) -> str:
         """Generate a fake VM ID."""
