@@ -728,6 +728,98 @@ def gpus(
     catalog = GPUCatalog(config)
     catalog.display(gpu_filter=gpu_filter, available_only=available_only)
 
+
+# --- SSH ---
+
+@app.command()
+def ssh(
+    vm_id: str = typer.Argument(..., help="VM ID to SSH into"),
+    command: Optional[str] = typer.Option(None, "--command", "-c", help="Command to run (interactive if omitted)"),
+):
+    """
+    Open an SSH session to a running VM.
+
+    Example:
+        minisky ssh mock-abc123
+        minisky ssh mock-abc123 -c "nvidia-smi"
+    """
+    try:
+        vm_info = state.get_vm(vm_id)
+        if not vm_info:
+            console.print(f"[red]VM not found:[/red] {vm_id}")
+            raise typer.Exit(1)
+
+        if vm_info['status'] != 'running':
+            console.print(f"[yellow]VM is not running (current: {vm_info['status']})[/yellow]")
+            raise typer.Exit(1)
+
+        from .ssh import SSHManager
+
+        ssh_manager = SSHManager(vm_info, config_manager=config)
+        exit_code = ssh_manager.connect(command=command)
+        raise typer.Exit(exit_code)
+
+    except typer.Exit:
+        raise
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
+# --- Port Forward ---
+
+@app.command(name="port-forward")
+def port_forward(
+    vm_id: str = typer.Argument(..., help="VM ID to forward ports from"),
+    ports: List[str] = typer.Argument(..., help="Ports to forward (e.g. 8888 jupyter 6006:6006)"),
+    background: bool = typer.Option(False, "--background", "-b", help="Run in background"),
+):
+    """
+    Forward ports from a running VM to localhost.
+
+    Supports numeric ports and named shortcuts (jupyter, tensorboard, gradio, etc.)
+
+    Example:
+        minisky port-forward mock-abc123 8888
+        minisky port-forward mock-abc123 jupyter tensorboard
+        minisky port-forward mock-abc123 8080:80 --background
+    """
+    try:
+        vm_info = state.get_vm(vm_id)
+        if not vm_info:
+            console.print(f"[red]VM not found:[/red] {vm_id}")
+            raise typer.Exit(1)
+
+        if vm_info['status'] != 'running':
+            console.print(f"[yellow]VM is not running (current: {vm_info['status']})[/yellow]")
+            raise typer.Exit(1)
+
+        from .ssh import SSHManager, parse_port_forwards
+
+        ssh_manager = SSHManager(vm_info, config_manager=config)
+        port_forwards = parse_port_forwards(ports)
+
+        if background:
+            int_ports = [pf.local_port for pf in port_forwards]
+            results = ssh_manager.forward_ports(int_ports, background=True)
+            for port, success in results.items():
+                if success:
+                    console.print(f"[green]✓[/green] localhost:{port} → remote:{port}")
+                else:
+                    console.print(f"[red]✗[/red] Failed to forward port {port}")
+        else:
+            console.print("[cyan]Port forwarding active. Press Ctrl+C to stop.[/cyan]")
+            ssh_manager.connect(port_forwards=port_forwards, extra_args=["-N"])
+
+    except typer.Exit:
+        raise
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Port forwarding stopped[/yellow]")
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+
 # --- Sync ---
 
 @app.command()
