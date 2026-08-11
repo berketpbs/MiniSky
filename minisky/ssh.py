@@ -28,6 +28,12 @@ class PortForward:
     def __post_init__(self):
         if self.remote_port is None:
             self.remote_port = self.local_port
+        if not 1 <= self.local_port <= 65535:
+            raise ValueError("local_port must be between 1 and 65535")
+        if not 1 <= self.remote_port <= 65535:
+            raise ValueError("remote_port must be between 1 and 65535")
+        if not self.remote_host:
+            raise ValueError("remote_host must not be empty")
     
     def to_ssh_arg(self) -> str:
         """Convert to SSH -L argument format."""
@@ -45,18 +51,22 @@ class PortForward:
         """
         parts = spec.split(":")
         
-        if len(parts) == 1:
-            port = int(parts[0])
-            return cls(local_port=port, remote_port=port)
-        elif len(parts) == 2:
-            return cls(local_port=int(parts[0]), remote_port=int(parts[1]))
-        elif len(parts) == 3:
-            return cls(
-                local_port=int(parts[0]),
-                remote_host=parts[1],
-                remote_port=int(parts[2])
-            )
-        else:
+        try:
+            if len(parts) == 1:
+                port = int(parts[0])
+                return cls(local_port=port, remote_port=port)
+            if len(parts) == 2:
+                return cls(local_port=int(parts[0]), remote_port=int(parts[1]))
+            if len(parts) == 3:
+                return cls(
+                    local_port=int(parts[0]),
+                    remote_host=parts[1],
+                    remote_port=int(parts[2])
+                )
+        except ValueError as exc:
+            raise ValueError(f"Invalid port forward spec: {spec}") from exc
+
+        if len(parts) not in (1, 2, 3):
             raise ValueError(f"Invalid port forward spec: {spec}")
 
 

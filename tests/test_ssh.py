@@ -188,6 +188,16 @@ class TestCommonPorts:
         pf = get_common_port("JUPYTER")
         assert pf is not None
 
+    def test_port_forward_rejects_invalid_ports(self):
+        with pytest.raises(ValueError, match="local_port"):
+            PortForward(local_port=0)
+        with pytest.raises(ValueError, match="remote_port"):
+            PortForward(local_port=8080, remote_port=65536)
+
+    def test_port_forward_parse_reports_invalid_numbers(self):
+        with pytest.raises(ValueError, match="Invalid port forward spec"):
+            PortForward.parse("not-a-port")
+
     def test_parse_port_forwards_mixed(self):
         """Parse a mix of named and numeric port specs."""
         forwards = parse_port_forwards(["jupyter", "6006", "3000:80"])
