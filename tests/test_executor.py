@@ -44,6 +44,26 @@ def test_connect_failure(mock_rsa, mock_ssh_client, mock_vm_info):
     
     assert "Failed to connect after 2 attempts" in str(exc_info.value)
 
+
+def test_connect_rejects_non_positive_parameters(mock_vm_info):
+    executor = Executor(mock_vm_info)
+
+    with pytest.raises(ValueError, match="timeout"):
+        executor.connect(timeout=0)
+    with pytest.raises(ValueError, match="retries"):
+        executor.connect(retries=0)
+
+
+def test_disconnect_clears_connection_references(mock_vm_info):
+    executor = Executor(mock_vm_info)
+    executor.ssh_client = MagicMock()
+    executor.sftp_client = MagicMock()
+
+    executor.disconnect()
+
+    assert executor.ssh_client is None
+    assert executor.sftp_client is None
+
 @patch('paramiko.SSHClient')
 @patch('paramiko.RSAKey.from_private_key_file')
 def test_execute_command(mock_rsa, mock_ssh_client, mock_vm_info):

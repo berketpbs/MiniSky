@@ -56,6 +56,11 @@ class Executor:
         Raises:
             ExecutorError: If connection fails after all retries
         """
+        if timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+        if retries <= 0:
+            raise ValueError("retries must be greater than zero")
+
         for attempt in range(retries):
             try:
                 self.ssh_client = paramiko.SSHClient()
@@ -105,8 +110,10 @@ class Executor:
         """Close SSH and SFTP connections."""
         if self.sftp_client:
             self.sftp_client.close()
+            self.sftp_client = None
         if self.ssh_client:
             self.ssh_client.close()
+            self.ssh_client = None
         console.print("[cyan]Disconnected from VM[/cyan]")
     
     def execute_command(
