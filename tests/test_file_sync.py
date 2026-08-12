@@ -256,3 +256,15 @@ class TestSyncConvenienceFunctions:
 
         assert result.success is True
         assert result.method == "sftp"
+
+
+class TestSyncInputValidation:
+    def test_sync_rejects_file_as_upload_root(self, tmp_path):
+        source = tmp_path / "file.txt"
+        source.write_text("data")
+        syncer = RsyncSyncer({"ip_address": "10.0.0.1"})
+
+        result = syncer.sync(str(source), "/remote", prefer_rsync=False)
+
+        assert result.success is False
+        assert "not a directory" in result.error

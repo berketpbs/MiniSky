@@ -500,6 +500,11 @@ class RsyncSyncer:
                     success=False,
                     error=f"Local path does not exist: {local_path}"
                 )
+            if not local_dir.is_dir():
+                return SyncResult(
+                    success=False,
+                    error=f"Local path is not a directory: {local_path}"
+                )
         
         # Try rsync first
         if prefer_rsync and self._check_rsync_available():
