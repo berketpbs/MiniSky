@@ -144,6 +144,18 @@ class TestRsyncSyncer:
         cmd_str = " ".join(cmd)
         assert "-i /home/user/.ssh/id_rsa" in cmd_str
 
+    def test_rsync_quotes_key_path(self):
+        syncer = RsyncSyncer({
+            "ip_address": "10.0.0.1",
+            "ssh_key_path": "/keys/my key",
+        })
+        command = syncer._build_rsync_command(
+            ".", "/work", SyncDirection.LOCAL_TO_REMOTE
+        )
+
+        ssh_command = command[command.index("-e") + 1]
+        assert "-i '/keys/my key'" in ssh_command
+
     def test_exclude_patterns_in_command(self, syncer):
         cmd = syncer._build_rsync_command(
             "/local", "/remote", SyncDirection.LOCAL_TO_REMOTE

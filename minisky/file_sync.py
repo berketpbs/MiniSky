@@ -16,6 +16,7 @@ import os
 import subprocess
 import shutil
 import fnmatch
+import shlex
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from dataclasses import dataclass, field
@@ -151,7 +152,8 @@ class RsyncSyncer:
         # SSH options
         ssh_cmd = f"ssh -p {port}"
         if key_path:
-            ssh_cmd += f" -i {key_path}"
+            normalized_key_path = str(Path(key_path).expanduser()).replace("\\", "/")
+            ssh_cmd += f" -i {shlex.quote(normalized_key_path)}"
         ssh_cmd += " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
         cmd.extend(["-e", ssh_cmd])
         
