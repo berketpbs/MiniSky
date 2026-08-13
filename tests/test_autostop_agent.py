@@ -39,6 +39,17 @@ class TestResourceMonitorConnect:
         assert kwargs["look_for_keys"] is True
         assert "key_filename" not in kwargs
 
+    def test_failed_connection_closes_client(self):
+        monitor = ResourceMonitor({"ip_address": "203.0.113.5"})
+        mock_client = MagicMock()
+        mock_client.connect.side_effect = OSError("refused")
+
+        with patch("minisky.autostop_agent.paramiko.SSHClient", return_value=mock_client):
+            assert monitor._connect() is False
+
+        mock_client.close.assert_called_once()
+        assert monitor._ssh_client is None
+
 
 class TestAutostopAgentStop:
     def test_stop_clears_thread_when_it_exits_in_time(self, tmp_path):

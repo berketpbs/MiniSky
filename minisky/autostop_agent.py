@@ -114,6 +114,9 @@ class ResourceMonitor:
             
         except Exception as e:
             logger.warning(f"Failed to connect to VM: {e}")
+            if self._ssh_client:
+                self._ssh_client.close()
+                self._ssh_client = None
             return False
     
     def _disconnect(self):
