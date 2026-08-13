@@ -73,6 +73,21 @@ class AutostopConfig:
     notify_before_stop: bool = True
     notify_minutes_before: int = 5
 
+    def __post_init__(self):
+        """Reject polling settings that cannot produce a useful watcher."""
+        if self.idle_timeout_minutes < 0:
+            raise ValueError("idle_timeout_minutes must be non-negative")
+        if self.check_interval_seconds < 0:
+            raise ValueError("check_interval_seconds must be non-negative")
+        if self.require_consecutive_idle <= 0:
+            raise ValueError("require_consecutive_idle must be greater than zero")
+        if not 0 <= self.cpu_idle_threshold <= 100:
+            raise ValueError("cpu_idle_threshold must be between 0 and 100")
+        if not 0 <= self.gpu_idle_threshold <= 100:
+            raise ValueError("gpu_idle_threshold must be between 0 and 100")
+        if self.notify_minutes_before < 0:
+            raise ValueError("notify_minutes_before must be non-negative")
+
 
 class ResourceMonitor:
     """

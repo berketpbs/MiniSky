@@ -51,6 +51,18 @@ class TestResourceMonitorConnect:
         assert monitor._ssh_client is None
 
 
+class TestAutostopConfig:
+    def test_rejects_non_positive_polling_values(self):
+        with pytest.raises(ValueError, match="check_interval_seconds"):
+            AutostopConfig(check_interval_seconds=-1)
+        with pytest.raises(ValueError, match="require_consecutive_idle"):
+            AutostopConfig(require_consecutive_idle=0)
+
+    def test_rejects_out_of_range_thresholds(self):
+        with pytest.raises(ValueError, match="cpu_idle_threshold"):
+            AutostopConfig(cpu_idle_threshold=101)
+
+
 class TestAutostopAgentStop:
     def test_stop_clears_thread_when_it_exits_in_time(self, tmp_path):
         agent = AutostopAgent(
