@@ -180,7 +180,7 @@ async def launch_cluster(cluster_id: str):
         cluster = await cluster_controller.launch_cluster(cluster_id)
         return ClusterResponse.from_record(cluster)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @app.post("/v1/clusters/{cluster_id}/stop", response_model=ClusterResponse)
@@ -190,7 +190,7 @@ async def stop_cluster(cluster_id: str):
         cluster = await cluster_controller.stop_cluster(cluster_id)
         return ClusterResponse.from_record(cluster)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.delete("/v1/clusters/{cluster_id}", response_model=ClusterResponse)
@@ -200,7 +200,7 @@ async def terminate_cluster(cluster_id: str):
         cluster = await cluster_controller.terminate_cluster(cluster_id)
         return ClusterResponse.from_record(cluster)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.get("/v1/clusters", response_model=List[ClusterResponse])
@@ -242,7 +242,7 @@ async def cancel_job(job_id: str):
         job = await job_controller.cancel_job(job_id)
         return JobResponse.from_record(job)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.get("/v1/jobs", response_model=List[JobResponse])
