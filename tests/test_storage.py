@@ -33,6 +33,10 @@ class TestFileMountParsing:
         assert mount.bucket_name == "my-bucket"
         assert mount.object_path == "datasets/imagenet"
 
+    def test_rejects_storage_uri_without_bucket(self):
+        with pytest.raises(ValueError, match="include a bucket"):
+            FileMount(local_path="/data", source="s3:///missing")
+
     def test_parse_file_mounts_simple_and_full_format(self):
         mounts = parse_file_mounts({
             "/data": "s3://bucket/data",

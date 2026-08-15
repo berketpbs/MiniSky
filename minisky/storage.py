@@ -62,6 +62,11 @@ class FileMount:
                 self.provider = StorageProvider.GCS
             else:
                 self.provider = StorageProvider.LOCAL
+        if self.provider in (StorageProvider.S3, StorageProvider.GCS):
+            scheme, _, remainder = self.source.partition("://")
+            bucket = remainder.split("/", 1)[0]
+            if not bucket:
+                raise ValueError(f"Storage URI must include a bucket: {self.source}")
     
     @property
     def bucket_name(self) -> Optional[str]:
