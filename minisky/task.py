@@ -103,6 +103,8 @@ class Task(BaseModel):
 
     name: str = Field(
         ...,
+        min_length=1,
+        max_length=128,
         description="Unique name for this task"
     )
     provider: str = Field(

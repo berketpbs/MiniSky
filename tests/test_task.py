@@ -62,6 +62,12 @@ class TestTask:
         assert t.num_nodes == 1
         assert t.run == ["echo hello"]
 
+    def test_name_must_be_bounded(self):
+        with pytest.raises(ValueError):
+            Task(name="", run=["echo"])
+        with pytest.raises(ValueError):
+            Task(name="x" * 129, run=["echo"])
+
     def test_full_task(self):
         t = Task(
             name="full",
