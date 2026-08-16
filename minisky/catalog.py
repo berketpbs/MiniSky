@@ -84,6 +84,16 @@ class GPUCatalog:
             except Exception as e:
                 console.print(f"[yellow]AWS catalog unavailable: {e}[/yellow]")
 
+        # GCP
+        if self._creds.is_gcp_configured():
+            try:
+                from .providers.gcp import GCPProvider
+                provider = GCPProvider()
+                entries = provider.get_gpu_catalog()
+                catalog.extend(entries)
+            except Exception as e:
+                console.print(f"[yellow]GCP catalog unavailable: {e}[/yellow]")
+
         # Add mock entries for reference
         catalog.extend(self._mock_catalog())
 

@@ -1,9 +1,9 @@
 # MiniSky
 
-Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine learning and data science workloads easily on multiple cloud providers (RunPod, Lambda Cloud, AWS) with a single command.
+Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine learning and data science workloads easily on multiple cloud providers (RunPod, Lambda Cloud, AWS, GCP) with a single command.
 
 ## Features
-- **Multi-Cloud Support**: Deploy to RunPod, Lambda Cloud, AWS EC2, or use the Mock provider for testing.
+- **Multi-Cloud Support**: Deploy to RunPod, Lambda Cloud, AWS EC2, GCP Compute Engine, or use the Mock provider for testing.
 - **Cost Optimizer**: Automatically selects the cheapest provider for your requirements.
 - **File Synchronization**: Automatically sync local directories (`workdir`) to remote VMs.
 - **Managed Jobs**: Automatic recovery from spot instance preemptions.
@@ -37,6 +37,14 @@ providers:
     region: "us-east-1"
     key_name: "your-ec2-keypair-name"       # required to SSH into launched instances
     security_group_id: "sg-xxxxxxxx"        # optional - must allow inbound SSH (22)
+  gcp:
+    project: "your-gcp-project-id"          # required - GCP has no default project
+    # Optional - if omitted, falls back to google-auth's standard chain
+    # (GOOGLE_APPLICATION_CREDENTIALS, `gcloud auth application-default login`,
+    # or the GCE metadata server)
+    credentials_path: "/path/to/service-account.json"
+    zone: "us-central1-a"
+    ssh_public_key_path: "~/.ssh/id_rsa.pub"  # required to SSH into launched instances
 ```
 
 2. Create a task YAML file (`task.yaml`):

@@ -707,7 +707,8 @@ def check():
 
     # AWS
     from .credentials import CredentialManager
-    if CredentialManager(config).is_aws_configured():
+    creds = CredentialManager(config)
+    if creds.is_aws_configured():
         region = config.get('providers.aws.region') or 'us-east-1 (default)'
         console.print(f"  [green]>[/green] aws: Configured (region: {region})")
     else:
@@ -715,6 +716,18 @@ def check():
             "  [red]x[/red] aws: Not configured "
             "(run 'aws configure', set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, "
             "or set providers.aws.access_key_id/secret_access_key)"
+        )
+
+    # GCP
+    if creds.is_gcp_configured():
+        zone = config.get('providers.gcp.zone') or 'us-central1-a (default)'
+        project = config.get('providers.gcp.project')
+        console.print(f"  [green]>[/green] gcp: Configured (project: {project}, zone: {zone})")
+    else:
+        console.print(
+            "  [red]x[/red] gcp: Not configured "
+            "(set providers.gcp.project, then run 'gcloud auth application-default login' "
+            "or set providers.gcp.credentials_path)"
         )
 
     # SSH

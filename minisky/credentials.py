@@ -113,6 +113,33 @@ class CredentialManager:
         except Exception:
             return False
 
+    def is_gcp_configured(self) -> bool:
+        """
+        Check if GCP credentials and a project are available.
+
+        Like AWS, GCP doesn't use a single API key - this requires
+        providers.gcp.project to be set (GCP has no sensible default
+        project) and credentials resolving via either an explicit
+        providers.gcp.credentials_path or google-auth's standard chain
+        (GOOGLE_APPLICATION_CREDENTIALS, `gcloud auth application-default
+        login`, or the GCE metadata server).
+
+        Returns:
+            True if a project is configured and credentials are available
+        """
+        if not self._config.get('providers.gcp.project'):
+            return False
+
+        if self._config.get('providers.gcp.credentials_path'):
+            return True
+
+        try:
+            import google.auth
+            google.auth.default()
+            return True
+        except Exception:
+            return False
+
     def get_configured_providers(self) -> list:
         """
         List all providers that have credentials configured.
@@ -126,6 +153,8 @@ class CredentialManager:
                 configured.append(provider)
         if self.is_aws_configured():
             configured.append('aws')
+        if self.is_gcp_configured():
+            configured.append('gcp')
         return configured
 
     def require_api_key(self, provider: str) -> str:
