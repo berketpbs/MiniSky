@@ -11,6 +11,10 @@ response DTOs, and route handlers that delegate to those controllers.
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 
+from ..console_utils import ensure_utf8_console
+
+ensure_utf8_console()
+
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel

@@ -7,14 +7,9 @@ Includes configuration management, log streaming, and GPU catalog.
 
 import sys
 
-if sys.platform == "win32":
-    # Non-UTF8 Windows console codepages (e.g. cp1254) can't encode the
-    # unicode spinner/box-drawing characters Rich writes for progress UI.
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8")
-        except (AttributeError, ValueError):
-            pass
+from .console_utils import ensure_utf8_console
+
+ensure_utf8_console()
 
 import typer
 from rich.console import Console
@@ -45,6 +40,43 @@ console = Console()
 state = StateManager()
 config = MiniSkyConfig()
 log_manager = LogManager(config)
+
+
+def _spawn_autostop_watcher(vm_id: str, timeout_minutes: int) -> Path:
+    """
+    Launch a detached background OS process that actually enforces
+    autostop for vm_id.
+
+    An in-process threading.Thread (even daemon=True) is killed the
+    instant this CLI command returns and the Python interpreter exits,
+    so it can never really watch anything past a single invocation.
+    This spawns minisky/autostop_runner.py as its own process, detached
+    from this one (new session on POSIX, DETACHED_PROCESS on Windows),
+    so it keeps running after `minisky launch` exits.
+
+    Returns the path to the watcher's log file.
+    """
+    import subprocess
+
+    log_path = config.log_dir / f"autostop-{vm_id}.log"
+    cmd = [
+        sys.executable, "-m", "minisky.autostop_runner",
+        vm_id, "--timeout-minutes", str(timeout_minutes),
+    ]
+
+    popen_kwargs = {"stdin": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    log_file = open(log_path, "a")
+    try:
+        subprocess.Popen(cmd, stdout=log_file, stderr=log_file, **popen_kwargs)
+    finally:
+        log_file.close()
+
+    return log_path
 
 
 # --- Launch ---
@@ -98,6 +130,7 @@ def launch(
     optimize: bool = typer.Option(False, "--optimize", "-o", help="Auto-select cheapest provider"),
     spot: bool = typer.Option(False, "--spot", "-s", help="Request spot/preemptible instance"),
     skip_setup: bool = typer.Option(False, "--skip-setup", help="Skip setup commands"),
+    no_autostop: bool = typer.Option(False, "--no-autostop", help="Disable autostop for this VM"),
 ):
     """
     Launch a new task on a cloud VM.
@@ -161,16 +194,29 @@ def launch(
         console.print(f"  IP: {vm_info['ip_address']}")
         console.print(f"  Provider: {vm_info['provider']}")
 
+        # Determine autostop before persisting, so it shows up in
+        # `minisky status <vm-id>` regardless of whether it's ever
+        # triggered. --no-autostop is the explicit opt-out: task.yaml's
+        # autostop_minutes field itself can't express "disabled" (it's
+        # constrained to >= 1), and there was previously no way at all to
+        # skip autostop for a single launch without editing global config.
+        autostop_minutes = None if no_autostop else (task.autostop_minutes or config.get('autostop_minutes'))
+        if autostop_minutes:
+            vm_info['autostop_minutes'] = autostop_minutes
+
         # Save to state
         state.add_vm(vm_info)
 
-        # Register autostop if configured
-        autostop_minutes = task.autostop_minutes or config.get('autostop_minutes')
-        if autostop_minutes and detach:
-            from .autostop import AutostopManager
-            autostop = AutostopManager(config, state)
-            autostop.register(vm_info['vm_id'], autostop_minutes)
-            autostop.start_daemon()
+        # Autostop runs as a genuinely detached background process (see
+        # _spawn_autostop_watcher) - not gated on --detach, since even a
+        # synchronous `minisky launch` leaves the VM running once the
+        # task finishes, and it needs the same idle protection.
+        if autostop_minutes:
+            log_path = _spawn_autostop_watcher(vm_info['vm_id'], autostop_minutes)
+            console.print(
+                f"[cyan]Autostop:[/cyan] {vm_info['vm_id']} will be watched for "
+                f"{autostop_minutes} idle minutes (background, log: {log_path})"
+            )
 
         if detach:
             console.print("\n[yellow]Task launched in detached mode[/yellow]")
@@ -305,6 +351,9 @@ def status(
                 f"[bold]Task:[/bold]     {vm_info['task_name']}\n"
                 f"[bold]Created:[/bold]  {vm_info['created_at']}"
             )
+            autostop_minutes = vm_info.get('autostop_minutes')
+            if autostop_minutes:
+                panel_content += f"\n[bold]Autostop:[/bold] {autostop_minutes} idle minutes"
             console.print(Panel(panel_content, title=f"VM {vm_id}", border_style="cyan"))
         else:
             # Show all VMs

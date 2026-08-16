@@ -324,6 +324,34 @@ class AutostopAgent:
         """Set callback functions for idle detection and stop events."""
         self._on_idle_callback = on_idle
         self._on_stop_callback = on_stop
+
+    def watch_until_stopped(self, vm_id: str, timeout_minutes: Optional[int] = None):
+        """
+        Block and monitor a single VM until it's no longer tracked - i.e.
+        until it's stopped/terminated (by autostop itself or manually) or
+        its record disappears from state.
+
+        This runs the check loop directly in the calling thread/process
+        rather than via start()'s background thread, because it's meant
+        to BE the entire body of a dedicated, detached watcher process for
+        exactly one VM (see minisky/autostop_runner.py) - a thread dies
+        the instant its parent process exits, which is exactly the bug
+        this exists to avoid.
+        """
+        self.register(vm_id, timeout_minutes=timeout_minutes)
+        while vm_id in self._tracked_vms:
+            try:
+                self._check_vm(vm_id)
+            except Exception as e:
+                # Log loudly rather than pass silently - a check cycle
+                # crashing here used to be indistinguishable from "still
+                # idle-but-not-yet-timed-out" (see _check_timestamp_idle's
+                # history), which is exactly the failure mode that let a
+                # detected-idle VM never actually get stopped.
+                logger.error(f"Unexpected error checking VM {vm_id}: {e}")
+            if vm_id not in self._tracked_vms:
+                break
+            time.sleep(self._autostop_config.check_interval_seconds)
     
     def start(self):
         """Start the autostop monitoring daemon."""
@@ -381,7 +409,15 @@ class AutostopAgent:
         if not vm_info:
             self.unregister(vm_id)
             return
-        
+
+        if vm_info['status'] in ('stopped', 'terminated'):
+            # Nothing left to watch - stopped/terminated by autostop
+            # itself or manually (e.g. `minisky stop`/`terminate`).
+            # Without this, a dedicated watch_until_stopped() process
+            # would poll a dead VM's record forever instead of exiting.
+            self.unregister(vm_id)
+            return
+
         if vm_info['status'] != 'running':
             return
         
@@ -445,12 +481,20 @@ class AutostopAgent:
         
         try:
             last_update = datetime.fromisoformat(str(updated_at))
-            idle_duration = datetime.now() - last_update
-            
-            if idle_duration > timedelta(minutes=config.idle_timeout_minutes):
-                self._handle_idle_vm(vm_id, vm_info, IdleReason.TIMEOUT)
         except (ValueError, TypeError):
-            pass
+            # Can't parse the stored timestamp - skip this check cycle,
+            # not the idle-handling action below (see the bug this
+            # replaced: catching too broadly here previously swallowed
+            # UnicodeEncodeError raised deep inside _handle_idle_vm's own
+            # console.print() too, since UnicodeEncodeError subclasses
+            # ValueError - so a VM correctly detected as idle would
+            # silently never actually get stopped, with no error shown
+            # anywhere, on any non-UTF8 console).
+            return
+
+        idle_duration = datetime.now() - last_update
+        if idle_duration > timedelta(minutes=config.idle_timeout_minutes):
+            self._handle_idle_vm(vm_id, vm_info, IdleReason.TIMEOUT)
     
     def _warn_idle_vm(self, vm_id: str, minutes_remaining: float):
         """Warn that a VM will be stopped soon."""

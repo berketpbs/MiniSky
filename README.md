@@ -5,6 +5,7 @@ Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine lear
 ## Features
 - **Multi-Cloud Support**: Deploy to RunPod, Lambda Cloud, AWS EC2, GCP Compute Engine, or use the Mock provider for testing.
 - **Cost Optimizer**: Automatically selects the cheapest provider for your requirements.
+- **Autostop**: Every launched VM is watched by a detached background process and stopped after 30 idle minutes by default (override per-task with `autostop_minutes`, or skip it entirely with `--no-autostop`) - protects against runaway bills even after `minisky launch` returns or the terminal is closed.
 - **File Synchronization**: Automatically sync local directories (`workdir`) to remote VMs.
 - **Managed Jobs**: Automatic recovery from spot instance preemptions.
 - **CLI & Web Dashboard**: Manage your instances from terminal or a Vue.js web UI.
@@ -76,6 +77,7 @@ minisky launch task.yaml
 ### VM lifecycle
 ```bash
 minisky launch task.yaml          # Launch a VM and run the task
+minisky launch task.yaml --no-autostop   # Skip autostop for this VM
 minisky status [vm-id]            # Show status of one or all VMs
 minisky stop <vm-id>              # Stop a VM, preserving disk
 minisky start <vm-id>             # Start a previously stopped VM
