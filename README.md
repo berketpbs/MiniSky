@@ -11,8 +11,13 @@ Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine lear
 
 ## Installation
 
+MiniSky isn't published to PyPI yet — install from source with `uv`:
+
 ```bash
-pip install minisky
+git clone https://github.com/berketpbs/MiniSky.git
+cd MiniSky
+uv venv
+uv pip sync pyproject.toml
 ```
 
 ## Quick Start
@@ -43,30 +48,45 @@ run:
 minisky launch task.yaml
 ```
 
-## Advanced CLI Commands
+> **Note:** the `mock` provider returns `127.0.0.1` as the VM's IP but doesn't run a
+> fake SSH server — MiniSky still opens a real SSH connection to execute `setup`/`run`.
+> To see a task actually execute end-to-end with `mock`, you need a local SSH server
+> listening on port 22 (e.g. Windows OpenSSH Server, or any Linux/macOS machine has one
+> by default). Without one, `launch` will time out at the "Waiting for SSH" step —
+> state tracking, the CLI, and providers can still be exercised, just not remote execution.
 
+## CLI Reference
+
+### VM lifecycle
 ```bash
-# Check status of running VMs
-minisky status
-
-# Forward ports (e.g. Jupyter or Tensorboard)
-minisky port-forward <vm-id> jupyter tensorboard
-
-# Open interactive SSH session
-minisky ssh <vm-id>
-
-# Run command remotely
-minisky exec <vm-id> "nvidia-smi"
-
-# View logs
-minisky logs <vm-id> -f
-
-# Add job to queue
-minisky queue add <vm-id> "python evaluate.py"
-
-# Terminate VM
-minisky terminate <vm-id>
+minisky launch task.yaml          # Launch a VM and run the task
+minisky status [vm-id]            # Show status of one or all VMs
+minisky stop <vm-id>              # Stop a VM, preserving disk
+minisky start <vm-id>             # Start a previously stopped VM
+minisky terminate <vm-id>         # Terminate a VM and clean up state
 ```
+
+### Working with a running VM
+```bash
+minisky exec <vm-id> "nvidia-smi"           # Run a command remotely
+minisky ssh <vm-id>                         # Open an interactive SSH session
+minisky port-forward <vm-id> jupyter tensorboard   # Forward ports locally
+minisky logs <vm-id> -f                     # Stream logs
+minisky sync <vm-id> ./local --remote ~/remote     # Sync files to/from a VM (rsync/SFTP)
+minisky rsync <vm-id> ./local ~/remote             # Quick rsync shortcut
+```
+
+### Fleet-level
+```bash
+minisky check                     # Verify setup and provider credentials
+minisky gpus                      # Browse GPU pricing/availability across providers
+minisky cost-report                # Cost report across all tracked VMs
+minisky config show|set|get|unset  # Manage ~/.minisky/config.yaml
+minisky cluster launch|status|terminate   # Multi-node cluster management
+minisky queue list|add|show|cancel|clear  # Job queue management
+```
+
+Run `minisky <command> --help` for full options on any command.
 
 ## Development
 

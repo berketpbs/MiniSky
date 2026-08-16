@@ -5,6 +5,17 @@ Provides commands for launching, managing, and terminating cloud VMs.
 Includes configuration management, log streaming, and GPU catalog.
 """
 
+import sys
+
+if sys.platform == "win32":
+    # Non-UTF8 Windows console codepages (e.g. cp1254) can't encode the
+    # unicode spinner/box-drawing characters Rich writes for progress UI.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+
 import typer
 from rich.console import Console
 from rich.table import Table
