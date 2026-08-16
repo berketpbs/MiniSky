@@ -85,6 +85,67 @@ def test_execute_command(mock_rsa, mock_ssh_client, mock_vm_info):
 
 @patch('paramiko.SSHClient')
 @patch('paramiko.RSAKey.from_private_key_file')
+def test_execute_command_on_line_callback_gets_each_line_tagged_by_stream(mock_rsa, mock_ssh_client, mock_vm_info):
+    executor = Executor(mock_vm_info)
+    mock_ssh = MagicMock()
+    mock_ssh_client.return_value = mock_ssh
+    executor.connect()
+
+    mock_channel = MagicMock()
+    mock_channel.recv_exit_status.return_value = 0
+    mock_stdout = MagicMock()
+    mock_stdout.channel = mock_channel
+    mock_stdout.__iter__.return_value = ["line 1\n", "line 2\n"]
+    mock_stderr = MagicMock()
+    mock_stderr.__iter__.return_value = ["warning: something\n"]
+
+    mock_ssh.exec_command.return_value = (MagicMock(), mock_stdout, mock_stderr)
+
+    received = []
+    executor.execute_command("echo hi", on_line=lambda line, stream: received.append((line, stream)))
+
+    assert received == [
+        ("line 1", "stdout"),
+        ("line 2", "stdout"),
+        ("warning: something", "stderr"),
+    ]
+
+
+@patch('paramiko.SSHClient')
+@patch('paramiko.RSAKey.from_private_key_file')
+def test_execute_task_forwards_on_line_for_setup_and_run_commands(mock_rsa, mock_ssh_client, mock_vm_info):
+    from minisky.task import Task
+
+    executor = Executor(mock_vm_info)
+    mock_ssh = MagicMock()
+    mock_ssh_client.return_value = mock_ssh
+
+    mock_channel = MagicMock()
+    mock_channel.recv_exit_status.return_value = 0
+    mock_stdout = MagicMock()
+    mock_stdout.channel = mock_channel
+    mock_stdout.__iter__.return_value = ["ok\n"]
+    mock_stderr = MagicMock()
+    mock_stderr.__iter__.return_value = []
+    mock_ssh.exec_command.return_value = (MagicMock(), mock_stdout, mock_stderr)
+
+    task = Task(
+        name="t",
+        run=["python train.py"],
+        setup=["pip install -r requirements.txt"],
+    )
+
+    received = []
+    executor.execute_task(task, on_line=lambda line, stream: received.append((line, stream)))
+
+    # Command markers for both phases, plus their (mocked) stdout output
+    assert ("pip install -r requirements.txt", "command") in received
+    assert ("python train.py", "command") in received
+    assert received.count(("ok", "stdout")) == 2  # once per command
+
+
+@patch('paramiko.SSHClient')
+@patch('paramiko.RSAKey.from_private_key_file')
 def test_sync_files(mock_rsa, mock_ssh_client, mock_vm_info, tmp_path):
     executor = Executor(mock_vm_info)
     mock_ssh = MagicMock()

@@ -522,6 +522,31 @@ class JobController:
             **extra,
         )
 
+    def _make_log_line_forwarder(self, job_id: str) -> Callable[[str, str], None]:
+        """
+        Build the on_line callback passed to Executor.execute_task().
+
+        Executor runs in a worker thread (via asyncio.to_thread), so this
+        callback fires from that thread, not the event loop - publishing
+        directly with `await` isn't an option there. Capture the running
+        loop up front and hand the publish coroutine to it via
+        run_coroutine_threadsafe, fire-and-forget (a slow/backed-up event
+        loop shouldn't stall command output from being read).
+        """
+        loop = asyncio.get_running_loop()
+
+        def on_line(line: str, stream: str):
+            event = Event(
+                event_type=EventType.LOG_LINE,
+                payload={"job_id": job_id, "line": line, "stream": stream},
+            )
+            asyncio.run_coroutine_threadsafe(
+                self.event_bus.publish(event, topic=f"job:{job_id}"),
+                loop,
+            )
+
+        return on_line
+
     async def _execute_job(self, job: JobRecord):
         """Execute job on cluster via real SSH (Executor.execute_task)."""
         try:
@@ -569,8 +594,9 @@ class JobController:
             await self._emit_job_state_change(job, JobState.SETTING_UP, JobState.RUNNING)
 
             executor = Executor(vm_info)
+            on_line = self._make_log_line_forwarder(job.job_id)
             try:
-                await asyncio.to_thread(executor.execute_task, task)
+                await asyncio.to_thread(executor.execute_task, task, on_line=on_line)
             except ExecutorError as e:
                 raise RuntimeError(str(e)) from e
 

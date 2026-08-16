@@ -8,7 +8,7 @@ and command execution on remote VMs.
 import paramiko
 import shlex
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -114,54 +114,66 @@ class Executor:
         command: str,
         env: Optional[Dict[str, str]] = None,
         stream_output: bool = True,
-        workdir: Optional[str] = None
+        workdir: Optional[str] = None,
+        on_line: Optional[Callable[[str, str], None]] = None,
     ) -> int:
         """
         Execute a command on the remote VM.
-        
+
         Args:
             command: Command to execute
             env: Environment variables
             stream_output: Whether to stream output to console
             workdir: Remote working directory to execute the command in
-            
+            on_line: Optional callback invoked with (line, stream) for each
+                line of output as it arrives, where stream is 'stdout' or
+                'stderr' - lets callers (e.g. the API server) forward
+                output live instead of only seeing it after the command
+                finishes
+
         Returns:
             Exit code of the command
-            
+
         Raises:
             ExecutorError: If not connected or execution fails
         """
         if not self.ssh_client:
             raise ExecutorError("Not connected to VM")
-        
+
         try:
             # Prepare environment
             env_str = ""
             if env:
                 env_str = " ".join([f"{k}={shlex.quote(str(v))}" for k, v in env.items()]) + " "
-            
+
             full_command = f"{env_str}{command}"
-            
+
             # Change to workdir if specified
             if workdir:
                 full_command = f"cd {workdir} && {full_command}"
-            
+
             # Execute command
             stdin, stdout, stderr = self.ssh_client.exec_command(full_command)
-            
+
             # Stream output
             if stream_output:
                 for line in stdout:
-                    console.print(line.rstrip())
-                
+                    text = line.rstrip()
+                    console.print(text)
+                    if on_line:
+                        on_line(text, "stdout")
+
                 for line in stderr:
-                    console.print(f"[red]{line.rstrip()}[/red]")
-            
+                    text = line.rstrip()
+                    console.print(f"[red]{text}[/red]")
+                    if on_line:
+                        on_line(text, "stderr")
+
             # Get exit code
             exit_code = stdout.channel.recv_exit_status()
-            
+
             return exit_code
-            
+
         except Exception as e:
             raise ExecutorError(f"Command execution failed: {str(e)}")
     
@@ -227,44 +239,51 @@ class Executor:
                 self._mkdir_p(remote_path)
                 self._upload_dir(local_path, remote_path)
     
-    def execute_task(self, task: Any):
+    def execute_task(self, task: Any, on_line: Optional[Callable[[str, str], None]] = None):
         """
         Execute a complete task on the remote VM.
-        
+
         Args:
             task: Task object with setup and run commands
-            
+            on_line: Optional callback invoked with (line, stream) for each
+                line of output as it arrives, and with (command, 'command')
+                right before each command starts - see execute_command()
+
         Raises:
             ExecutorError: If task execution fails
         """
         try:
             # Connect to VM
             self.connect()
-            
+
             # Sync workdir if specified
             remote_workdir = "~/workdir" if task.workdir else None
             if task.workdir:
                 self.sync_files(task.workdir, remote_path=remote_workdir)
-            
+
             # Execute setup commands
             if task.setup:
                 console.print("\n[bold cyan]Running setup commands...[/bold cyan]")
                 for i, cmd in enumerate(task.setup, 1):
                     console.print(f"\n[cyan]Setup {i}/{len(task.setup)}:[/cyan] {cmd}")
-                    exit_code = self.execute_command(cmd, env=task.env, workdir=remote_workdir)
+                    if on_line:
+                        on_line(cmd, "command")
+                    exit_code = self.execute_command(cmd, env=task.env, workdir=remote_workdir, on_line=on_line)
                     if exit_code != 0:
                         raise ExecutorError(f"Setup command failed with exit code {exit_code}")
-            
+
             # Execute run commands
             console.print("\n[bold green]Running main commands...[/bold green]")
             for i, cmd in enumerate(task.run, 1):
                 console.print(f"\n[green]Run {i}/{len(task.run)}:[/green] {cmd}")
-                exit_code = self.execute_command(cmd, env=task.env, workdir=remote_workdir)
+                if on_line:
+                    on_line(cmd, "command")
+                exit_code = self.execute_command(cmd, env=task.env, workdir=remote_workdir, on_line=on_line)
                 if exit_code != 0:
                     raise ExecutorError(f"Run command failed with exit code {exit_code}")
-            
+
             console.print("\n[bold green]✓ Task completed successfully[/bold green]")
-            
+
         finally:
             # Always disconnect
             self.disconnect()

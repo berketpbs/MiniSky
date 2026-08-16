@@ -311,6 +311,66 @@ class TestJobExecutionRealSSH:
         assert called_task.run == ["python train.py"]
         assert called_task.provider == "mock"
 
+        # execute_task must also have been handed a live on_line callback
+        assert callable(mock_executor_instance.execute_task.call_args.kwargs.get("on_line"))
+
+    @pytest.mark.asyncio
+    async def test_log_lines_are_published_as_events_while_executing(self):
+        """Executor's on_line callback fires from a worker thread
+        (asyncio.to_thread) - verifies it correctly crosses back onto the
+        event loop via run_coroutine_threadsafe and reaches a job:<id>
+        topic subscriber as real LOG_LINE events, not just after the job
+        finishes."""
+        bus = EventBus()
+        cluster_controller = ClusterController(bus)
+        job_controller = JobController(bus, cluster_controller)
+
+        cluster = _up_cluster(cluster_id="sky-fixed03")
+        cluster_controller._clusters[cluster.cluster_id] = cluster
+
+        def fake_execute_task(task, on_line=None):
+            on_line("python train.py", "command")
+            on_line("epoch 1/10 - loss 0.42", "stdout")
+
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.execute_task.side_effect = fake_execute_task
+        mock_executor_cls = MagicMock(return_value=mock_executor_instance)
+
+        job = JobRecord(
+            job_id="job-log-1",
+            name="train",
+            state=JobState.PENDING,
+            task_yaml="",
+            entrypoint="python train.py",
+            cluster_id=cluster.cluster_id,
+        )
+
+        queue = bus.subscribe(topic=f"job:{job.job_id}")
+
+        with patch.object(server_module, "Executor", mock_executor_cls):
+            await job_controller._execute_job(job)
+
+        assert job.state == JobState.SUCCEEDED
+
+        # on_line runs cross-thread via run_coroutine_threadsafe, so give
+        # the loop a moment to actually process the scheduled publishes
+        await _wait_until(lambda: queue.qsize() >= 2, timeout=2.0)
+
+        log_events = []
+        while not queue.empty():
+            event = queue.get_nowait()
+            if event.event_type == EventType.LOG_LINE:
+                log_events.append(event)
+
+        lines = [e.payload["line"] for e in log_events]
+        streams = [e.payload["stream"] for e in log_events]
+        assert "python train.py" in lines
+        assert "epoch 1/10 - loss 0.42" in lines
+        assert "command" in streams
+        assert "stdout" in streams
+        assert all(e.payload["job_id"] == job.job_id for e in log_events)
+        assert all(e.topic == f"job:{job.job_id}" for e in log_events)
+
     @pytest.mark.asyncio
     async def test_executor_error_reported_as_job_failure(self):
         bus = EventBus()
