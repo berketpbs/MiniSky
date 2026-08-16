@@ -61,6 +61,10 @@ class ManagedJob:
     command: str
     status: ManagedJobStatus = ManagedJobStatus.PENDING
     vm_id: Optional[str] = None
+    # Task definition used to (re-)launch this job's VM - required for
+    # automatic recovery on preemption, since relaunching needs the same
+    # resource requirements the job was originally submitted with.
+    task: Optional[Any] = None
     checkpoint_config: CheckpointConfig = field(default_factory=CheckpointConfig)
     recovery_config: RecoveryConfig = field(default_factory=RecoveryConfig)
     
@@ -167,7 +171,8 @@ class ManagedJobController:
             task_name=task.name,
             command=command,
             checkpoint_config=checkpoint_config,
-            recovery_config=recovery_config
+            recovery_config=recovery_config,
+            task=task,
         )
         
         with self._lock:
@@ -201,49 +206,53 @@ class ManagedJobController:
         Returns:
             True if launched successfully
         """
-        job.status = ManagedJobStatus.LAUNCHING
-        job.attempts += 1
-        
+        with self._lock:
+            job.status = ManagedJobStatus.LAUNCHING
+            job.attempts += 1
+
         console.print(f"\n[cyan]Launching managed job (attempt {job.attempts})...[/cyan]")
-        
+
         try:
             # Configure spot if enabled
             if job.recovery_config.use_spot:
                 task.resources.use_spot = True
-            
+
             # Launch VM
             vm_info = self.provider.launch(task)
-            job.vm_id = vm_info['vm_id']
-            job.started_at = time.time()
-            
+            with self._lock:
+                job.vm_id = vm_info['vm_id']
+                job.started_at = time.time()
+
             self.state.add_vm({
                 **vm_info,
                 'managed_job_id': job.job_id
             })
-            
+
             console.print(f"[green]✓[/green] VM launched: {vm_info['vm_id']}")
-            
+
             # Restore checkpoint if available
             if job.checkpoint_config.enabled and job.last_checkpoint and self.storage:
                 console.print("[cyan]Restoring checkpoint...[/cyan]")
                 executor = self.executor_factory(vm_info)
                 executor.connect()
-                
-                self.storage.restore_checkpoint(
-                    executor,
-                    job.last_checkpoint,
-                    job.checkpoint_config.local_path
-                )
-                
-                executor.disconnect()
-            
-            job.status = ManagedJobStatus.RUNNING
+                try:
+                    self.storage.restore_checkpoint(
+                        executor,
+                        job.last_checkpoint,
+                        job.checkpoint_config.local_path
+                    )
+                finally:
+                    executor.disconnect()
+
+            with self._lock:
+                job.status = ManagedJobStatus.RUNNING
             return True
-            
+
         except Exception as e:
             console.print(f"[red]Launch failed:[/red] {str(e)}")
-            job.error_message = str(e)
-            job.status = ManagedJobStatus.FAILED
+            with self._lock:
+                job.error_message = str(e)
+                job.status = ManagedJobStatus.FAILED
             return False
     
     def execute_job(self, job: ManagedJob) -> int:
@@ -279,7 +288,8 @@ class ManagedJobController:
             
         except Exception as e:
             console.print(f"[red]Execution error:[/red] {str(e)}")
-            job.error_message = str(e)
+            with self._lock:
+                job.error_message = str(e)
             return -1
         finally:
             executor.disconnect()
@@ -320,20 +330,24 @@ class ManagedJobController:
             True if recovery initiated
         """
         console.print(f"\n[yellow]⚠ Spot preemption detected for job {job.job_id}[/yellow]")
-        
-        job.status = ManagedJobStatus.RECOVERING
-        
+
+        with self._lock:
+            job.status = ManagedJobStatus.RECOVERING
+
         # Clean up old VM
         if job.vm_id:
             try:
                 self.state.remove_vm(job.vm_id)
             except Exception:
                 pass
-            job.vm_id = None
-        
+            with self._lock:
+                job.vm_id = None
+
         if not job.can_retry:
             console.print("[red]Max retries exceeded, job failed[/red]")
-            job.status = ManagedJobStatus.FAILED
+            with self._lock:
+                job.status = ManagedJobStatus.FAILED
+                job.completed_at = time.time()
             return False
         
         # Wait before retry
@@ -402,11 +416,22 @@ class ManagedJobController:
             
             for job in running_jobs:
                 status = self.check_vm_status(job)
-                
+
                 if status in ("not_found", "terminated", "preempted"):
-                    # VM was preempted or terminated
-                    # Note: In real implementation, would need task reference
                     console.print(f"[yellow]Job {job.job_id} VM status: {status}[/yellow]")
+                    if job.task is not None:
+                        self.handle_preemption(job, job.task)
+                    else:
+                        # Submitted through a path that didn't retain the
+                        # Task (e.g. constructed directly, not via submit())
+                        # - there's nothing to relaunch with.
+                        console.print(
+                            f"[red]Job {job.job_id}: no task reference stored, cannot recover[/red]"
+                        )
+                        with self._lock:
+                            job.status = ManagedJobStatus.FAILED
+                            job.error_message = f"VM {status}; no task reference available for recovery"
+                            job.completed_at = time.time()
             
             time.sleep(check_interval)
     
@@ -465,10 +490,11 @@ class ManagedJobController:
                 self.state.remove_vm(job.vm_id)
             except Exception:
                 pass
-        
-        job.status = ManagedJobStatus.CANCELLED
-        job.completed_at = time.time()
-        
+
+        with self._lock:
+            job.status = ManagedJobStatus.CANCELLED
+            job.completed_at = time.time()
+
         console.print(f"[green]✓[/green] Managed job cancelled: {job_id}")
         return True
     
@@ -487,8 +513,9 @@ class ManagedJobController:
         if not job:
             return False
         
-        job.status = ManagedJobStatus.COMPLETED if success else ManagedJobStatus.FAILED
-        job.completed_at = time.time()
+        with self._lock:
+            job.status = ManagedJobStatus.COMPLETED if success else ManagedJobStatus.FAILED
+            job.completed_at = time.time()
         
         # Terminate VM
         if job.vm_id:

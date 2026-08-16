@@ -9,6 +9,7 @@ Provides cloud storage integration (S3, GCS) with support for:
 
 import os
 import json
+import shlex
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 from enum import Enum
@@ -136,19 +137,19 @@ class S3Backend(BaseStorageBackend):
         console.print(f"[cyan]Copying from {mount.source} to {mount.local_path}...[/cyan]")
         
         # Create directory
-        executor.execute_command(f"mkdir -p {mount.local_path}", stream_output=False)
-        
+        executor.execute_command(f"mkdir -p {shlex.quote(mount.local_path)}", stream_output=False)
+
         # Use aws s3 sync
-        cmd = f"aws s3 sync {mount.source} {mount.local_path}"
+        cmd = f"aws s3 sync {shlex.quote(mount.source)} {shlex.quote(mount.local_path)}"
         exit_code = executor.execute_command(cmd, env=self._get_env_vars())
-        
+
         return exit_code == 0
-    
+
     def copy_from_vm(self, executor: Any, local_path: str, remote_uri: str) -> bool:
         """Copy files from VM to S3."""
         console.print(f"[cyan]Uploading from {local_path} to {remote_uri}...[/cyan]")
-        
-        cmd = f"aws s3 sync {local_path} {remote_uri}"
+
+        cmd = f"aws s3 sync {shlex.quote(local_path)} {shlex.quote(remote_uri)}"
         exit_code = executor.execute_command(cmd, env=self._get_env_vars())
         
         return exit_code == 0
@@ -164,28 +165,28 @@ class S3Backend(BaseStorageBackend):
         )
         
         # Create mount point
-        executor.execute_command(f"mkdir -p {mount.local_path}", stream_output=False)
-        
+        executor.execute_command(f"mkdir -p {shlex.quote(mount.local_path)}", stream_output=False)
+
         # Create credentials file
         if self.config.s3_access_key and self.config.s3_secret_key:
             creds = f"{self.config.s3_access_key}:{self.config.s3_secret_key}"
             executor.execute_command(
-                f"echo '{creds}' > ~/.passwd-s3fs && chmod 600 ~/.passwd-s3fs",
+                f"echo {shlex.quote(creds)} > ~/.passwd-s3fs && chmod 600 ~/.passwd-s3fs",
                 stream_output=False
             )
-        
+
         # Mount
         bucket = mount.bucket_name
         obj_path = mount.object_path
-        
-        cmd = f"s3fs {bucket}:/{obj_path} {mount.local_path} -o passwd_file=~/.passwd-s3fs"
+
+        cmd = f"s3fs {shlex.quote(f'{bucket}:/{obj_path}')} {shlex.quote(mount.local_path)} -o passwd_file=~/.passwd-s3fs"
         exit_code = executor.execute_command(cmd)
-        
+
         return exit_code == 0
-    
+
     def unmount_on_vm(self, executor: Any, local_path: str) -> bool:
         """Unmount S3 bucket."""
-        exit_code = executor.execute_command(f"fusermount -u {local_path}")
+        exit_code = executor.execute_command(f"fusermount -u {shlex.quote(local_path)}")
         return exit_code == 0
 
 
@@ -200,19 +201,19 @@ class GCSBackend(BaseStorageBackend):
         console.print(f"[cyan]Copying from {mount.source} to {mount.local_path}...[/cyan]")
         
         # Create directory
-        executor.execute_command(f"mkdir -p {mount.local_path}", stream_output=False)
-        
+        executor.execute_command(f"mkdir -p {shlex.quote(mount.local_path)}", stream_output=False)
+
         # Use gsutil rsync
-        cmd = f"gsutil -m rsync -r {mount.source} {mount.local_path}"
+        cmd = f"gsutil -m rsync -r {shlex.quote(mount.source)} {shlex.quote(mount.local_path)}"
         exit_code = executor.execute_command(cmd)
-        
+
         return exit_code == 0
-    
+
     def copy_from_vm(self, executor: Any, local_path: str, remote_uri: str) -> bool:
         """Copy files from VM to GCS."""
         console.print(f"[cyan]Uploading from {local_path} to {remote_uri}...[/cyan]")
-        
-        cmd = f"gsutil -m rsync -r {local_path} {remote_uri}"
+
+        cmd = f"gsutil -m rsync -r {shlex.quote(local_path)} {shlex.quote(remote_uri)}"
         exit_code = executor.execute_command(cmd)
         
         return exit_code == 0
@@ -234,24 +235,24 @@ class GCSBackend(BaseStorageBackend):
         executor.execute_command(install_cmd, stream_output=False)
         
         # Create mount point
-        executor.execute_command(f"mkdir -p {mount.local_path}", stream_output=False)
-        
+        executor.execute_command(f"mkdir -p {shlex.quote(mount.local_path)}", stream_output=False)
+
         # Mount
         bucket = mount.bucket_name
         obj_path = mount.object_path
-        
+
         if obj_path:
-            cmd = f"gcsfuse --only-dir {obj_path} {bucket} {mount.local_path}"
+            cmd = f"gcsfuse --only-dir {shlex.quote(obj_path)} {shlex.quote(bucket)} {shlex.quote(mount.local_path)}"
         else:
-            cmd = f"gcsfuse {bucket} {mount.local_path}"
-        
+            cmd = f"gcsfuse {shlex.quote(bucket)} {shlex.quote(mount.local_path)}"
+
         exit_code = executor.execute_command(cmd)
-        
+
         return exit_code == 0
-    
+
     def unmount_on_vm(self, executor: Any, local_path: str) -> bool:
         """Unmount GCS bucket."""
-        exit_code = executor.execute_command(f"fusermount -u {local_path}")
+        exit_code = executor.execute_command(f"fusermount -u {shlex.quote(local_path)}")
         return exit_code == 0
 
 
@@ -318,9 +319,9 @@ class StorageManager:
         results = {}
         
         for mount in mounts:
-            backend = self.get_backend(mount.provider)
-            
             try:
+                backend = self.get_backend(mount.provider)
+
                 if mount.mode == MountMode.COPY:
                     success = backend.copy_to_vm(executor, mount)
                 else:

@@ -188,7 +188,13 @@ class ClusterManager:
             task_name=task.name,
             num_nodes=num_nodes
         )
-        
+
+        # Register before launching any nodes: if a later node's launch
+        # fails partway through, the nodes already up are still findable
+        # via get_cluster()/terminate_cluster() instead of running
+        # untracked and unterminable through this manager.
+        self._clusters[cluster_id] = cluster
+
         console.print(f"[cyan]Creating cluster with {num_nodes} nodes...[/cyan]")
         
         # Launch head node first
@@ -219,9 +225,7 @@ class ClusterManager:
             cluster.nodes.append(worker_node)
             self.state.add_vm({**worker_vm, 'cluster_id': cluster_id, 'node_role': 'worker', 'rank': i})
             console.print(f"[green]✓[/green] Worker node {i}: {worker_vm['vm_id']} ({worker_vm['ip_address']})")
-        
-        self._clusters[cluster_id] = cluster
-        
+
         console.print(f"\n[green]✓[/green] Cluster created: {cluster_id}")
         console.print(f"  Nodes: {num_nodes}")
         console.print(f"  Master: {cluster.master_addr}")
@@ -337,8 +341,12 @@ class ClusterManager:
             # Get distributed environment
             env = cluster.get_distributed_env(node, master_port)
             
-            # Wrap command with torchrun if requested
-            if use_torchrun and command.endswith('.py'):
+            # Wrap command with torchrun if requested. Trust the caller's
+            # explicit flag rather than guessing from the command string -
+            # command.endswith('.py') broke for any script invoked with
+            # CLI args (e.g. "train.py --epochs 10"), silently degrading
+            # multi-node runs to N independent single-process executions.
+            if use_torchrun:
                 cmd = cluster.get_torchrun_cmd(node, command, nproc_per_node, master_port)
             else:
                 cmd = command
@@ -387,9 +395,13 @@ class ClusterManager:
                 console.print(f"[red]Error terminating node{node.rank}:[/red] {str(e)}")
                 success = False
         
-        if cluster.cluster_id in self._clusters:
+        if success and cluster.cluster_id in self._clusters:
+            # Only drop it once every node is confirmed gone - if a node's
+            # terminate failed, keep the cluster trackable so the caller
+            # can retry termination on the still-running orphan instead of
+            # having to find and kill it manually.
             del self._clusters[cluster.cluster_id]
-        
+
         return success
     
     def display_cluster(self, cluster: Cluster) -> None:
