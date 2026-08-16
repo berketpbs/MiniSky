@@ -74,6 +74,16 @@ class GPUCatalog:
             except Exception as e:
                 console.print(f"[yellow]Lambda catalog unavailable: {e}[/yellow]")
 
+        # AWS
+        if self._creds.is_aws_configured():
+            try:
+                from .providers.aws import AWSProvider
+                provider = AWSProvider()
+                entries = provider.get_gpu_catalog()
+                catalog.extend(entries)
+            except Exception as e:
+                console.print(f"[yellow]AWS catalog unavailable: {e}[/yellow]")
+
         # Add mock entries for reference
         catalog.extend(self._mock_catalog())
 

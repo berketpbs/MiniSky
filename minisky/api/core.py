@@ -380,23 +380,40 @@ class ProviderRegistry:
     _providers: Dict[str, Type[BaseProvider]] = {
         "mock": MockProvider,
     }
-    
+
+    # Lazy-loaded so the API server doesn't need every provider's SDK
+    # (boto3, httpx, etc.) importable just to boot with mock only.
+    _LAZY_PROVIDERS = {
+        "runpod": ("minisky.providers.runpod", "RunPodProvider"),
+        "lambda": ("minisky.providers.lambda_cloud", "LambdaProvider"),
+        "aws": ("minisky.providers.aws", "AWSProvider"),
+    }
+
     @classmethod
     def register(cls, name: str, provider_class: Type[BaseProvider]):
         """Register a new provider."""
         cls._providers[name] = provider_class
-    
+
     @classmethod
     def get(cls, name: str, config: Optional[Dict[str, Any]] = None) -> BaseProvider:
         """Get provider instance by name."""
+        if name not in cls._providers and name in cls._LAZY_PROVIDERS:
+            import importlib
+            module_path, class_name = cls._LAZY_PROVIDERS[name]
+            module = importlib.import_module(module_path)
+            cls._providers[name] = getattr(module, class_name)
+
         if name not in cls._providers:
-            raise ValueError(f"Unknown provider: {name}. Available: {list(cls._providers.keys())}")
+            available = list(cls._providers.keys()) + [
+                p for p in cls._LAZY_PROVIDERS if p not in cls._providers
+            ]
+            raise ValueError(f"Unknown provider: {name}. Available: {available}")
         return cls._providers[name](config or {})
-    
+
     @classmethod
     def list_providers(cls) -> List[str]:
         """List available providers."""
-        return list(cls._providers.keys())
+        return list(set(list(cls._providers.keys()) + list(cls._LAZY_PROVIDERS.keys())))
 
 
 # =============================================================================

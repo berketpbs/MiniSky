@@ -106,7 +106,7 @@ class Task(BaseModel):
     )
     provider: str = Field(
         "mock",
-        description="Cloud provider to use (mock, runpod, lambda)"
+        description="Cloud provider to use (mock, runpod, lambda, aws)"
     )
     resources: ResourceRequirements = Field(
         default_factory=ResourceRequirements,
@@ -152,7 +152,7 @@ class Task(BaseModel):
     @classmethod
     def validate_provider(cls, v: str) -> str:
         """Validate provider is supported."""
-        supported = ['mock', 'runpod', 'lambda']
+        supported = ['mock', 'runpod', 'lambda', 'aws']
         if v.lower() not in supported:
             raise ValueError(
                 f"Provider '{v}' not supported. "

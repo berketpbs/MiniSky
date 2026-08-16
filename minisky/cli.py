@@ -705,6 +705,18 @@ def check():
     else:
         console.print(f"  [red]x[/red] lambda: Not configured (set providers.lambda.api_key)")
 
+    # AWS
+    from .credentials import CredentialManager
+    if CredentialManager(config).is_aws_configured():
+        region = config.get('providers.aws.region') or 'us-east-1 (default)'
+        console.print(f"  [green]>[/green] aws: Configured (region: {region})")
+    else:
+        console.print(
+            "  [red]x[/red] aws: Not configured "
+            "(run 'aws configure', set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, "
+            "or set providers.aws.access_key_id/secret_access_key)"
+        )
+
     # SSH
     console.print("\n[bold]SSH:[/bold]")
     ssh_key = config.get('ssh.default_key_path')

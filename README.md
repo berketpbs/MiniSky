@@ -1,9 +1,9 @@
 # MiniSky
 
-Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine learning and data science workloads easily on multiple cloud providers (RunPod, Lambda Cloud) with a single command.
+Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine learning and data science workloads easily on multiple cloud providers (RunPod, Lambda Cloud, AWS) with a single command.
 
 ## Features
-- **Multi-Cloud Support**: Deploy to RunPod, Lambda Cloud, or use the Mock provider for testing.
+- **Multi-Cloud Support**: Deploy to RunPod, Lambda Cloud, AWS EC2, or use the Mock provider for testing.
 - **Cost Optimizer**: Automatically selects the cheapest provider for your requirements.
 - **File Synchronization**: Automatically sync local directories (`workdir`) to remote VMs.
 - **Managed Jobs**: Automatic recovery from spot instance preemptions.
@@ -29,6 +29,14 @@ providers:
     api_key: "YOUR_RUNPOD_KEY"
   lambda:
     api_key: "YOUR_LAMBDA_KEY"
+  aws:
+    # Optional - if omitted, falls back to the standard AWS credential
+    # chain (`aws configure`, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, IAM role)
+    access_key_id: "YOUR_AWS_ACCESS_KEY_ID"
+    secret_access_key: "YOUR_AWS_SECRET_ACCESS_KEY"
+    region: "us-east-1"
+    key_name: "your-ec2-keypair-name"       # required to SSH into launched instances
+    security_group_id: "sg-xxxxxxxx"        # optional - must allow inbound SSH (22)
 ```
 
 2. Create a task YAML file (`task.yaml`):

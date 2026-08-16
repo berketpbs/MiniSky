@@ -90,6 +90,29 @@ class CredentialManager:
         """
         return self.get_api_key(provider) is not None
 
+    def is_aws_configured(self) -> bool:
+        """
+        Check if AWS credentials are available.
+
+        Unlike RunPod/Lambda, AWS doesn't use a single API key - this
+        checks MiniSky's own config first, then falls back to boto3's
+        standard credential chain (env vars, ~/.aws/credentials, IAM role),
+        matching how the AWS CLI itself resolves credentials.
+
+        Returns:
+            True if AWS credentials are available from any source
+        """
+        access_key = self._config.get('providers.aws.access_key_id')
+        secret_key = self._config.get('providers.aws.secret_access_key')
+        if access_key and secret_key:
+            return True
+
+        try:
+            import boto3
+            return boto3.Session().get_credentials() is not None
+        except Exception:
+            return False
+
     def get_configured_providers(self) -> list:
         """
         List all providers that have credentials configured.
@@ -101,6 +124,8 @@ class CredentialManager:
         for provider in self._ENV_VARS:
             if self.is_configured(provider):
                 configured.append(provider)
+        if self.is_aws_configured():
+            configured.append('aws')
         return configured
 
     def require_api_key(self, provider: str) -> str:

@@ -17,6 +17,7 @@ _PROVIDERS = {
 _LAZY_PROVIDERS = {
     'runpod': ('minisky.providers.runpod', 'RunPodProvider'),
     'lambda': ('minisky.providers.lambda_cloud', 'LambdaProvider'),
+    'aws': ('minisky.providers.aws', 'AWSProvider'),
 }
 
 
