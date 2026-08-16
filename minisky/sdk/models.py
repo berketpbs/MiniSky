@@ -120,7 +120,12 @@ class Job:
     
     def is_terminal(self) -> bool:
         """Check if job is in terminal state."""
-        return self.state in (JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED)
+        return self.state in (
+            JobState.SUCCEEDED,
+            JobState.FAILED,
+            JobState.FAILED_SETUP,
+            JobState.CANCELLED,
+        )
     
     def succeeded(self) -> bool:
         """Check if job succeeded."""

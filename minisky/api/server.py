@@ -84,7 +84,10 @@ class ClusterResponse(BaseModel):
     num_nodes: int
     head_ip: Optional[str]
     launched_at: Optional[str]
-    
+    instance_type: Optional[str] = None
+    accelerators: Optional[Dict[str, int]] = None
+    autostop_minutes: Optional[int] = None
+
     @classmethod
     def from_record(cls, record: ClusterRecord) -> "ClusterResponse":
         return cls(
@@ -94,7 +97,10 @@ class ClusterResponse(BaseModel):
             provider=record.provider,
             num_nodes=record.num_nodes,
             head_ip=record.head_ip,
-            launched_at=record.launched_at.isoformat() if record.launched_at else None
+            launched_at=record.launched_at.isoformat() if record.launched_at else None,
+            instance_type=record.instance_type,
+            accelerators=record.accelerators,
+            autostop_minutes=record.autostop_minutes,
         )
 
 

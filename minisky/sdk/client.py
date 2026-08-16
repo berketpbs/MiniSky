@@ -55,7 +55,7 @@ class ClusterAPI:
             data["instance_type"] = instance_type
         if accelerators:
             data["accelerators"] = accelerators
-        if autostop_minutes:
+        if autostop_minutes is not None:
             data["autostop_minutes"] = autostop_minutes
         
         response = self._client._post("/v1/clusters", data)
@@ -301,7 +301,7 @@ class AsyncClusterAPI:
             data["instance_type"] = instance_type
         if accelerators:
             data["accelerators"] = accelerators
-        if autostop_minutes:
+        if autostop_minutes is not None:
             data["autostop_minutes"] = autostop_minutes
         
         response = await self._client._post("/v1/clusters", data)
@@ -456,15 +456,24 @@ class AsyncMiniSkyClient:
         self.timeout = timeout
         
         self._client: Optional[Any] = None
-        
+        self._client_lock = asyncio.Lock()
+
         # API namespaces
         self.clusters = AsyncClusterAPI(self)
         self.jobs = AsyncJobAPI(self)
-    
+
     async def _ensure_client(self):
-        """Ensure HTTP client is initialized."""
+        """Ensure HTTP client is initialized.
+
+        Guarded by a lock: without it, two coroutines can both see
+        self._client is None and each construct an httpx.AsyncClient - the
+        first one gets overwritten and its connections/sockets leak since
+        it's never closed.
+        """
         if self._client is None:
-            self._client = httpx.AsyncClient(timeout=self.timeout)
+            async with self._client_lock:
+                if self._client is None:
+                    self._client = httpx.AsyncClient(timeout=self.timeout)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers."""
@@ -534,8 +543,10 @@ class AsyncMiniSkyClient:
                     data = json.loads(message)
                     event = Event.from_dict(data)
                     
-                    # Filter by topic if specified
-                    if topic and event.topic and not event.topic.startswith(topic):
+                    # Filter by topic if specified - an event with no topic
+                    # at all never matches a requested filter, so it must
+                    # be skipped too, not just one with a non-matching topic.
+                    if topic and not (event.topic and event.topic.startswith(topic)):
                         continue
                     
                     yield event

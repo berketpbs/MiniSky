@@ -462,3 +462,25 @@ class TestBuildJobTask:
         task = JobController._build_job_task(job, cluster)
         assert task.run == ["python train.py"]
         assert task.setup is None
+
+
+class TestClusterResponseSerialization:
+    def test_instance_type_accelerators_autostop_survive_the_response(self):
+        """ClusterResponse used to drop instance_type/accelerators/
+        autostop_minutes entirely, so a caller reading them back off the
+        SDK's Cluster model always saw None regardless of what they
+        submitted at creation."""
+        from fastapi.testclient import TestClient
+        from minisky.api.server import app
+
+        with TestClient(app) as client:
+            r = client.post("/v1/clusters", json={
+                "name": "t",
+                "provider": "mock",
+                "accelerators": {"A100": 2},
+                "autostop_minutes": 30,
+            })
+            data = r.json()
+
+        assert data["accelerators"] == {"A100": 2}
+        assert data["autostop_minutes"] == 30

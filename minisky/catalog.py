@@ -130,9 +130,9 @@ class GPUCatalog:
 
         for entry in entries:
             available_str = "[green]Yes[/green]" if entry.get('available') else "[red]No[/red]"
-            price = f"${entry.get('price_per_hour', 0):.2f}" if entry.get('price_per_hour') else "-"
-            spot = f"${entry['spot_price']:.2f}" if entry.get('spot_price') else "-"
-            vram = f"{entry.get('memory_gb', '-')} GB" if entry.get('memory_gb') else "-"
+            price = f"${entry['price_per_hour']:.2f}" if entry.get('price_per_hour') is not None else "-"
+            spot = f"${entry['spot_price']:.2f}" if entry.get('spot_price') is not None else "-"
+            vram = f"{entry['memory_gb']} GB" if entry.get('memory_gb') is not None else "-"
 
             table.add_row(
                 entry.get('provider', '-'),
@@ -175,7 +175,10 @@ class GPUCatalog:
             with open(self._cache_path, 'r') as f:
                 data = json.load(f)
 
-            cached_at = datetime.fromisoformat(data.get('cached_at', '2000-01-01'))
+            cached_at_str = data.get('cached_at')
+            if not cached_at_str:
+                return None
+            cached_at = datetime.fromisoformat(cached_at_str)
             age = (datetime.now() - cached_at).total_seconds()
 
             if age > self._cache_ttl_seconds:
