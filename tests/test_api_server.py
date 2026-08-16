@@ -6,7 +6,8 @@ parallel implementation covered by tests/test_api.py).
 
 import asyncio
 import json
-from unittest.mock import patch
+from datetime import datetime
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -17,6 +18,7 @@ from minisky.api.server import (
     EventBus,
     EventType,
     ClusterController,
+    ClusterRecord,
     ClusterState,
     JobController,
     JobRecord,
@@ -24,6 +26,7 @@ from minisky.api.server import (
 )
 from minisky.providers.mock import MockProvider
 from minisky.providers.base import ProviderError
+from minisky.executor import ExecutorError
 
 
 async def _wait_until(predicate, timeout=5.0, interval=0.05):
@@ -247,3 +250,146 @@ class TestClusterControllerRealProviderWiring:
             await _wait_until(lambda: cluster.cluster_id not in controller._clusters)
 
         assert vm_id not in provider._instances
+
+
+def _up_cluster(cluster_id="sky-fixed01", provider="mock"):
+    return ClusterRecord(
+        cluster_id=cluster_id,
+        name="c",
+        state=ClusterState.UP,
+        provider=provider,
+        head_ip="203.0.113.9",
+        ssh_port=22,
+        ssh_user="ubuntu",
+        vm_id="mock-fixed01",
+        launched_at=datetime.utcnow(),
+    )
+
+
+class TestJobExecutionRealSSH:
+    """
+    _execute_job used to simulate everything with asyncio.sleep(). It now
+    actually SSHes into the cluster's VM via Executor.execute_task() -
+    these tests mock out Executor itself (no real network/SSH) and assert
+    it's called with the cluster's real connection info and the job's
+    entrypoint as the run command.
+    """
+
+    @pytest.mark.asyncio
+    async def test_execute_job_runs_entrypoint_via_executor_over_real_vm_info(self):
+        bus = EventBus()
+        cluster_controller = ClusterController(bus)
+        job_controller = JobController(bus, cluster_controller)
+
+        cluster = _up_cluster()
+        cluster_controller._clusters[cluster.cluster_id] = cluster
+
+        mock_executor_instance = MagicMock()
+        mock_executor_cls = MagicMock(return_value=mock_executor_instance)
+
+        job = JobRecord(
+            job_id="job-1",
+            name="train",
+            state=JobState.PENDING,
+            task_yaml="",
+            entrypoint="python train.py",
+            cluster_id=cluster.cluster_id,
+        )
+
+        with patch.object(server_module, "Executor", mock_executor_cls):
+            await job_controller._execute_job(job)
+
+        assert job.state == JobState.SUCCEEDED
+        assert job.exit_code == 0
+
+        mock_executor_cls.assert_called_once_with({
+            "ip_address": "203.0.113.9",
+            "ssh_port": 22,
+            "ssh_user": "ubuntu",
+        })
+        called_task = mock_executor_instance.execute_task.call_args.args[0]
+        assert called_task.run == ["python train.py"]
+        assert called_task.provider == "mock"
+
+    @pytest.mark.asyncio
+    async def test_executor_error_reported_as_job_failure(self):
+        bus = EventBus()
+        cluster_controller = ClusterController(bus)
+        job_controller = JobController(bus, cluster_controller)
+
+        cluster = _up_cluster(cluster_id="sky-fixed02")
+        cluster_controller._clusters[cluster.cluster_id] = cluster
+
+        mock_executor_instance = MagicMock()
+        mock_executor_instance.execute_task.side_effect = ExecutorError(
+            "setup command failed with exit code 1"
+        )
+        mock_executor_cls = MagicMock(return_value=mock_executor_instance)
+
+        job = JobRecord(
+            job_id="job-2",
+            name="train",
+            state=JobState.PENDING,
+            task_yaml="",
+            entrypoint="python train.py",
+            cluster_id=cluster.cluster_id,
+        )
+
+        with patch.object(server_module, "Executor", mock_executor_cls):
+            await job_controller._execute_job(job)
+
+        assert job.state == JobState.FAILED
+        assert "setup command failed" in job.failure_reason
+
+    @pytest.mark.asyncio
+    async def test_job_without_cluster_id_fails_clearly_instead_of_faking_success(self):
+        bus = EventBus()
+        cluster_controller = ClusterController(bus)
+        job_controller = JobController(bus, cluster_controller)
+
+        job = JobRecord(
+            job_id="job-3",
+            name="train",
+            state=JobState.PENDING,
+            task_yaml="",
+            entrypoint="python train.py",
+            cluster_id=None,
+        )
+
+        await job_controller._execute_job(job)
+
+        assert job.state == JobState.FAILED
+        assert "cluster_id is required" in job.failure_reason
+
+
+class TestBuildJobTask:
+    def test_entrypoint_is_authoritative_run_command(self):
+        cluster = _up_cluster()
+        job = JobRecord(
+            job_id="j",
+            name="train",
+            state=JobState.PENDING,
+            task_yaml=(
+                "run: ['this should be ignored']\n"
+                "setup: ['pip install -r requirements.txt']\n"
+                "env:\n  FOO: bar\n"
+            ),
+            entrypoint="python train.py",
+        )
+        task = JobController._build_job_task(job, cluster)
+        assert task.run == ["python train.py"]
+        assert task.setup == ["pip install -r requirements.txt"]
+        assert task.env == {"FOO": "bar"}
+
+    def test_empty_task_yaml_is_fine(self):
+        cluster = _up_cluster()
+        job = JobRecord(
+            job_id="j",
+            name="train",
+            state=JobState.PENDING,
+            task_yaml="",
+            entrypoint="python train.py",
+        )
+        task = JobController._build_job_task(job, cluster)
+        assert task.run == ["python train.py"]
+        assert task.setup is None

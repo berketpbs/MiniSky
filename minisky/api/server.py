@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 import json
 
+import yaml
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -31,6 +32,7 @@ from pydantic import BaseModel, Field
 from minisky.providers import get_provider
 from minisky.providers.base import ProviderError
 from minisky.task import Task, ResourceRequirements
+from minisky.executor import Executor, ExecutorError
 
 
 # =============================================================================
@@ -490,48 +492,88 @@ class JobController:
         
         return job
     
-    async def _execute_job(self, job: JobRecord):
+    @staticmethod
+    def _build_job_task(job: JobRecord, cluster: ClusterRecord) -> Task:
         """
-        Execute job on cluster.
+        Build the Task Executor.execute_task() actually runs.
 
-        Note: unlike ClusterController (which now calls the real provider
-        via get_provider()), this still simulates execution with
-        asyncio.sleep() rather than actually SSHing in and running
-        setup/run via Executor. Wiring that up is separate follow-up work
-        (needs asyncio.to_thread around the blocking paramiko-based
-        Executor, plus deciding how LOG_LINE events stream command output).
+        `entrypoint` is the authoritative run command (this is what every
+        real caller - the SDK's run_training_job() helper included - sets;
+        task_yaml is commonly left ""). If task_yaml does parse as a YAML
+        mapping, it can supply supplementary fields (setup, env, workdir)
+        but never overrides provider/name/run.
         """
+        extra: Dict[str, Any] = {}
+        if job.task_yaml and job.task_yaml.strip():
+            try:
+                loaded = yaml.safe_load(job.task_yaml)
+                if isinstance(loaded, dict):
+                    extra = loaded
+            except yaml.YAMLError:
+                pass
+        extra.pop("name", None)
+        extra.pop("provider", None)
+        extra.pop("run", None)
+
+        return Task(
+            name=job.name,
+            provider=cluster.provider,
+            run=[job.entrypoint],
+            **extra,
+        )
+
+    async def _execute_job(self, job: JobRecord):
+        """Execute job on cluster via real SSH (Executor.execute_task)."""
         try:
-            # Find or wait for cluster
-            if job.cluster_id:
+            if not job.cluster_id:
+                # submit_job()'s docstring says a missing cluster_id should
+                # auto-find-or-create one; that scheduling logic was never
+                # built. Fail clearly instead of silently "succeeding" at
+                # nothing, which is what happened before this was wired up.
+                raise ValueError(
+                    "cluster_id is required - MiniSky doesn't auto-provision "
+                    "a cluster for a job yet. Create and launch one first."
+                )
+
+            cluster = self.cluster_controller.get_cluster(job.cluster_id)
+            if not cluster:
+                raise ValueError(f"Cluster not found: {job.cluster_id}")
+
+            # Wait for cluster to be UP
+            while cluster.state != ClusterState.UP:
+                if cluster.state in (ClusterState.ERROR, ClusterState.TERMINATED):
+                    raise RuntimeError(f"Cluster in invalid state: {cluster.state}")
+                await asyncio.sleep(1)
                 cluster = self.cluster_controller.get_cluster(job.cluster_id)
-                if not cluster:
-                    raise ValueError(f"Cluster not found: {job.cluster_id}")
-                
-                # Wait for cluster to be UP
-                while cluster.state != ClusterState.UP:
-                    if cluster.state in (ClusterState.ERROR, ClusterState.TERMINATED):
-                        raise RuntimeError(f"Cluster in invalid state: {cluster.state}")
-                    await asyncio.sleep(1)
-                    cluster = self.cluster_controller.get_cluster(job.cluster_id)
-                    if cluster is None:
-                        raise RuntimeError(f"Cluster no longer exists: {job.cluster_id}")
-            
+                if cluster is None:
+                    raise RuntimeError(f"Cluster no longer exists: {job.cluster_id}")
+
+            task = self._build_job_task(job, cluster)
+            vm_info = {
+                "ip_address": cluster.head_ip,
+                "ssh_port": cluster.ssh_port,
+                "ssh_user": cluster.ssh_user or "root",
+            }
+
             # Transition to SETTING_UP
             job.state = JobState.SETTING_UP
             job.started_at = datetime.utcnow()
             await self._emit_job_state_change(job, JobState.PENDING, JobState.SETTING_UP)
-            
-            # Setup phase (install deps, sync files, etc.)
-            await asyncio.sleep(1)  # Simulate setup
-            
-            # Transition to RUNNING
+
+            # Executor.execute_task() connects, syncs workdir, runs setup
+            # then run commands - all blocking (paramiko), so it runs in a
+            # worker thread rather than stalling the event loop. It doesn't
+            # expose a setup-vs-run boundary callback, so RUNNING is emitted
+            # right before handing off rather than mid-execution.
             job.state = JobState.RUNNING
             await self._emit_job_state_change(job, JobState.SETTING_UP, JobState.RUNNING)
-            
-            # Execute (simulate)
-            await asyncio.sleep(3)
-            
+
+            executor = Executor(vm_info)
+            try:
+                await asyncio.to_thread(executor.execute_task, task)
+            except ExecutorError as e:
+                raise RuntimeError(str(e)) from e
+
             # Success
             job.state = JobState.SUCCEEDED
             job.ended_at = datetime.utcnow()
