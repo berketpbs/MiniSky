@@ -1024,15 +1024,16 @@ def cost_report():
     Example:
         minisky cost-report
     """
-    from .price_fetcher import PriceFetcher
-    
-    fetcher = PriceFetcher()
+    import datetime
+    from .catalog import GPUCatalog
+
+    entries = GPUCatalog(config).fetch_all()
     vms = state.list_vms()
-    
+
     if not vms:
         console.print("[yellow]No VMs found to report costs for.[/yellow]")
         return
-        
+
     table = Table(title="Cost Report")
     table.add_column("VM ID", style="cyan")
     table.add_column("Provider", style="blue")
@@ -1040,43 +1041,61 @@ def cost_report():
     table.add_column("Runtime (h)", style="white", justify="right")
     table.add_column("Rate/hr", style="green", justify="right")
     table.add_column("Total Cost", style="bold green", justify="right")
-    
+
     total_cost = 0.0
-    
+    any_estimated = False
+
     for vm in vms:
         provider = vm.get('provider', 'unknown')
-        instance_type = vm.get('instance_type', 'unknown')
-        
-        # Calculate runtime based on launched_at if running, or 0 if stopped without history
-        # (This is simplified. In a real app we'd track cumulative runtime.)
+        instance_type = vm.get('instance_type') or vm.get('machine_type')
+        display_type = instance_type or 'unknown'
+
+        # Runtime is derived from the `created_at` column that StateManager
+        # stamps on every VM row (CURRENT_TIMESTAMP, UTC) - not a
+        # provider-supplied 'launched_at', which no provider actually sets
+        # on the vm_info dict it returns from launch(). We only have a
+        # start time, not an end time, so a terminated/stopped VM's cost is
+        # frozen at 0 here rather than fabricated; tracking cumulative
+        # runtime across stop/start cycles is a bigger feature than this
+        # report covers.
         runtime_h = 0.0
-        if vm.get('status') == 'running' and 'launched_at' in vm:
-            import datetime
-            launched_at_timestamp = vm['launched_at']
-            if isinstance(launched_at_timestamp, str):
-                try:
-                    launched_dt = datetime.datetime.fromisoformat(launched_at_timestamp)
-                    runtime_h = (datetime.datetime.utcnow() - launched_dt).total_seconds() / 3600.0
-                except ValueError:
-                    pass
-            elif isinstance(launched_at_timestamp, (int, float)):
-                 runtime_h = (time.time() - launched_at_timestamp) / 3600.0
-        
-        rate = fetcher.get_price(provider, instance_type) or 0.0
+        if vm.get('status') == 'running' and vm.get('created_at'):
+            try:
+                created_dt = datetime.datetime.fromisoformat(str(vm['created_at']))
+                runtime_h = max((datetime.datetime.utcnow() - created_dt).total_seconds() / 3600.0, 0.0)
+            except ValueError:
+                pass
+
+        gpu_name = None
+        resources = vm.get('resources')
+        if isinstance(resources, dict):
+            gpu_name = resources.get('gpu')
+        gpu_name = gpu_name or vm.get('gpu_type')
+
+        entry = _find_catalog_entry(entries, provider, instance_type, gpu_name)
+        rate = entry.get('price_per_hour') if entry else None
+        if rate is None:
+            rate = 0.0
+        elif entry.get('price_is_estimate'):
+            any_estimated = True
+
         cost = runtime_h * rate
         total_cost += cost
-        
+
+        rate_str = f"${rate:.3f}" + ("~" if entry and entry.get('price_is_estimate') else "")
         table.add_row(
             vm['vm_id'][:12],
             provider,
-            instance_type,
+            display_type,
             f"{runtime_h:.2f}",
-            f"${rate:.3f}",
+            rate_str,
             f"${cost:.3f}"
         )
-        
+
     table.add_row("", "", "", "", "Total:", f"[bold green]${total_cost:.3f}[/bold green]")
     console.print(table)
+    if any_estimated:
+        console.print("[dim]~ = static price estimate, not a live quote[/dim]")
 
 
 # --- Cluster ---

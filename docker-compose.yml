@@ -1,0 +1,60 @@
+version: '3.9'
+
+services:
+  minisky-cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: minisky:latest
+    container_name: minisky-cli
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Mount config directory
+      - ~/.minisky:/root/.minisky
+      # Mount current directory for tasks and workdir
+      - .:/workspace
+    working_dir: /workspace
+    entrypoint: ["minisky"]
+    stdin_open: true
+    tty: true
+
+  # Optional: API server for web dashboard
+  minisky-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: minisky:latest
+    container_name: minisky-api
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ~/.minisky:/root/.minisky
+      - .:/workspace
+    ports:
+      - "8000:8000"
+    working_dir: /workspace
+    entrypoint: ["python", "-m", "minisky.api.main"]
+    depends_on:
+      - minisky-cli
+    restart: unless-stopped
+
+  # Optional: Dashboard (if available)
+  minisky-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: minisky:latest
+    container_name: minisky-dashboard
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ~/.minisky:/root/.minisky
+      - .:/workspace
+    ports:
+      - "5000:5000"
+    working_dir: /workspace
+    entrypoint: ["python", "-m", "minisky.dashboard.app"]
+    depends_on:
+      - minisky-api
+    restart: unless-stopped
