@@ -146,12 +146,14 @@ class Event:
     event_type: EventType
     payload: Dict[str, Any]
     timestamp: datetime = field(default_factory=datetime.utcnow)
-    
+    topic: Optional[str] = None
+
     def to_json(self) -> str:
         return json.dumps({
             "type": self.event_type.value,
             "payload": self.payload,
-            "timestamp": self.timestamp.isoformat()
+            "timestamp": self.timestamp.isoformat(),
+            "topic": self.topic,
         })
 
 
@@ -167,14 +169,21 @@ class EventBus:
     
     async def publish(self, event: Event, topic: Optional[str] = None):
         """Publish event to subscribers."""
+        event.topic = topic
+
+        # Snapshot subscriber sets before awaiting - a concurrent
+        # subscribe()/unsubscribe() (e.g. a client disconnecting mid-publish)
+        # would otherwise mutate these sets during iteration.
+        global_subscribers = list(self._global_subscribers)
+        topic_subscribers = list(self._subscribers.get(topic, ())) if topic else []
+
         # Global subscribers get all events
-        for queue in self._global_subscribers:
+        for queue in global_subscribers:
             await queue.put(event)
-        
+
         # Topic-specific subscribers
-        if topic and topic in self._subscribers:
-            for queue in self._subscribers[topic]:
-                await queue.put(event)
+        for queue in topic_subscribers:
+            await queue.put(event)
     
     def subscribe(self, topic: Optional[str] = None) -> asyncio.Queue:
         """Subscribe to events."""
@@ -468,6 +477,8 @@ class JobController:
                         raise RuntimeError(f"Cluster in invalid state: {cluster.state}")
                     await asyncio.sleep(1)
                     cluster = self.cluster_controller.get_cluster(job.cluster_id)
+                    if cluster is None:
+                        raise RuntimeError(f"Cluster no longer exists: {job.cluster_id}")
             
             # Transition to SETTING_UP
             job.state = JobState.SETTING_UP
@@ -491,10 +502,11 @@ class JobController:
             await self._emit_job_state_change(job, JobState.RUNNING, JobState.SUCCEEDED)
             
         except Exception as e:
+            previous_state = job.state
             job.state = JobState.FAILED
             job.ended_at = datetime.utcnow()
             job.failure_reason = str(e)
-            await self._emit_job_state_change(job, job.state, JobState.FAILED)
+            await self._emit_job_state_change(job, previous_state, JobState.FAILED)
             
             # Handle recovery if enabled
             if job.spot_recovery and job.restart_count < job.max_restarts:
@@ -591,8 +603,11 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
+    # No cookie/Authorization-based auth exists yet, so there's nothing
+    # that needs allow_credentials - and the CORS spec forbids combining
+    # it with a wildcard origin anyway (browsers reject the response).
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -799,6 +814,11 @@ async def websocket_endpoint(websocket: WebSocket):
             event = await queue.get()
             await websocket.send_text(event.to_json())
     except WebSocketDisconnect:
+        pass
+    finally:
+        # Always unsubscribe, not just on a clean WebSocketDisconnect -
+        # otherwise an abrupt close (e.g. ConnectionResetError) leaks the
+        # queue forever and it keeps accumulating every future event.
         event_bus.unsubscribe(queue)
 
 

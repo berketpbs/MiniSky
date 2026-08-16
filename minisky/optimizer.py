@@ -117,8 +117,8 @@ class CostOptimizer:
         # Sort: available first, then by effective price
         def sort_key(r: OptimizerResult) -> Tuple[int, float]:
             avail = 0 if r.available else 1
-            price = r.spot_price if (use_spot and r.spot_price) else r.price_per_hour
-            return (avail, price or 999)
+            price = r.spot_price if (use_spot and r.spot_price is not None) else r.price_per_hour
+            return (avail, price if price is not None else 999)
 
         candidates.sort(key=sort_key)
         return candidates

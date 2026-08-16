@@ -105,6 +105,8 @@ class ResourceMonitor:
             }
             
             if key_path:
+                connect_kwargs['key_filename'] = key_path
+            else:
                 connect_kwargs['look_for_keys'] = True
             
             self._ssh_client.connect(**connect_kwargs)
@@ -342,7 +344,13 @@ class AutostopAgent:
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
-            self._thread = None
+            if self._thread.is_alive():
+                # Still running (e.g. mid-sleep past the timeout) - leave
+                # _thread set so start() sees is_alive()==True and refuses
+                # to spawn a second, concurrent monitor loop.
+                logger.warning("Autostop agent thread did not stop within timeout")
+            else:
+                self._thread = None
         logger.info("Autostop agent stopped")
     
     def _monitor_loop(self):

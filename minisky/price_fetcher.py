@@ -457,9 +457,9 @@ class RealTimePriceFetcher:
         
         # Sort by price
         def sort_key(p: GPUPrice) -> float:
-            if prefer_spot and p.spot_price:
+            if prefer_spot and p.spot_price is not None:
                 return p.spot_price
-            return p.price_per_hour or 999
+            return p.price_per_hour if p.price_per_hour is not None else 999
         
         filtered.sort(key=sort_key)
         return filtered[0]
@@ -493,7 +493,7 @@ class RealTimePriceFetcher:
             filtered.append(p)
         
         # Sort by price
-        filtered.sort(key=lambda p: p.price_per_hour or 999)
+        filtered.sort(key=lambda p: p.price_per_hour if p.price_per_hour is not None else 999)
         return filtered
 
 
