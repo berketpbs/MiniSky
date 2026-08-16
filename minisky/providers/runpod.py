@@ -175,7 +175,7 @@ class RunPodProvider(BaseProvider):
                 if status in ('EXITED', 'TERMINATED', 'ERROR'):
                     raise ProviderError(f"Pod entered {status} state before getting IP")
 
-            except httpx.RequestError:
+            except httpx.HTTPError:
                 pass
 
             time.sleep(3)
@@ -275,6 +275,8 @@ class RunPodProvider(BaseProvider):
             return True
         except httpx.HTTPStatusError as e:
             raise ProviderError(f"RunPod stop error: {e.response.status_code} - {e.response.text}")
+        except httpx.RequestError as e:
+            raise ProviderError(f"RunPod connection error: {str(e)}")
 
     def start(self, vm_id: str) -> bool:
         """
@@ -295,6 +297,8 @@ class RunPodProvider(BaseProvider):
             return True
         except httpx.HTTPStatusError as e:
             raise ProviderError(f"RunPod start error: {e.response.status_code} - {e.response.text}")
+        except httpx.RequestError as e:
+            raise ProviderError(f"RunPod connection error: {str(e)}")
 
     def list_instances(self) -> List[VMInfo]:
         """
@@ -308,9 +312,11 @@ class RunPodProvider(BaseProvider):
         try:
             response = client.get('/pods')
             response.raise_for_status()
-            pods = response.json().get('pods', response.json())
+            data = response.json()
         except httpx.RequestError as e:
             raise ProviderError(f"RunPod connection error: {str(e)}")
+
+        pods = data if isinstance(data, list) else data.get('pods', [])
 
         if not isinstance(pods, list):
             return []

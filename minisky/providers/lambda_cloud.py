@@ -141,8 +141,7 @@ class LambdaProvider(BaseProvider):
             response.raise_for_status()
             data = response.json().get('data', {})
         except httpx.HTTPStatusError as e:
-            error_msg = e.response.json().get('error', {}).get('message', e.response.text)
-            raise ProviderError(f"Lambda launch error: {error_msg}")
+            raise ProviderError(f"Lambda launch error: {self._extract_error_message(e)}")
         except httpx.RequestError as e:
             raise ProviderError(f"Lambda connection error: {str(e)}")
 
@@ -152,16 +151,12 @@ class LambdaProvider(BaseProvider):
 
         instance_id = instance_ids[0]
 
-        # Wait briefly for instance details
-        import time
-        time.sleep(5)
-
-        # Get instance details
-        instance = self._get_instance(instance_id)
+        # Wait for instance to get an IP address
+        ip_address = self._wait_for_ip(instance_id)
 
         vm_info: VMInfo = {
             'vm_id': f"lambda-{instance_id}",
-            'ip_address': instance.get('ip', 'pending'),
+            'ip_address': ip_address,
             'ssh_port': 22,
             'ssh_user': 'ubuntu',
             'status': 'running',
@@ -184,6 +179,50 @@ class LambdaProvider(BaseProvider):
             return response.json().get('data', {})
         except httpx.RequestError as e:
             raise ProviderError(f"Lambda API error: {str(e)}")
+
+    def _wait_for_ip(self, instance_id: str, timeout: int = 120) -> str:
+        """
+        Wait for an instance to get a public IP address.
+
+        Args:
+            instance_id: Lambda instance ID
+            timeout: Maximum wait time in seconds
+
+        Returns:
+            Public IP address
+
+        Raises:
+            ProviderError: If timeout exceeded or instance fails to boot
+        """
+        import time
+        start = time.time()
+
+        while time.time() - start < timeout:
+            try:
+                instance = self._get_instance(instance_id)
+            except ProviderError:
+                time.sleep(3)
+                continue
+
+            ip = instance.get('ip')
+            if ip:
+                return ip
+
+            status = instance.get('status', '')
+            if status in ('terminated', 'terminating', 'unhealthy'):
+                raise ProviderError(f"Instance entered '{status}' state before getting an IP")
+
+            time.sleep(3)
+
+        raise ProviderError(f"Timeout waiting for instance {instance_id} to get an IP address")
+
+    @staticmethod
+    def _extract_error_message(error: httpx.HTTPStatusError) -> str:
+        """Extract a human-readable error message from a Lambda API error response."""
+        try:
+            return error.response.json().get('error', {}).get('message', error.response.text)
+        except ValueError:
+            return error.response.text
 
     def _get_ssh_keys(self) -> list:
         """Get list of SSH key names from Lambda account."""
@@ -245,10 +284,46 @@ class LambdaProvider(BaseProvider):
             response.raise_for_status()
             return True
         except httpx.HTTPStatusError as e:
-            error_msg = e.response.json().get('error', {}).get('message', e.response.text)
-            raise ProviderError(f"Lambda terminate error: {error_msg}")
+            raise ProviderError(f"Lambda terminate error: {self._extract_error_message(e)}")
         except httpx.RequestError as e:
             raise ProviderError(f"Lambda connection error: {str(e)}")
+
+    def stop(self, vm_id: str) -> bool:
+        """
+        Stop a Lambda Cloud instance.
+
+        Lambda Cloud's public API does not support stopping instances while
+        preserving disk (unlike RunPod) - only launch and terminate are
+        available. This is documented and raised as a ProviderError rather
+        than silently terminating the instance.
+
+        Args:
+            vm_id: VM identifier
+
+        Raises:
+            ProviderError: Always - Lambda Cloud does not support this operation
+        """
+        raise ProviderError(
+            "Lambda Cloud does not support stopping instances. "
+            "Use 'terminate' instead - Lambda only offers launch/terminate, no stop/start."
+        )
+
+    def start(self, vm_id: str) -> bool:
+        """
+        Start a stopped Lambda Cloud instance.
+
+        Lambda Cloud's public API does not support this operation - see stop().
+
+        Args:
+            vm_id: VM identifier
+
+        Raises:
+            ProviderError: Always - Lambda Cloud does not support this operation
+        """
+        raise ProviderError(
+            "Lambda Cloud does not support starting instances. "
+            "Launch a new instance instead - Lambda only offers launch/terminate, no stop/start."
+        )
 
     def list_instances(self) -> List[VMInfo]:
         """
