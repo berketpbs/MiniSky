@@ -50,8 +50,13 @@ class TestMockProvider:
     """Tests for MockProvider."""
 
     @pytest.fixture
-    def provider(self):
-        return MockProvider({'simulate_delay': False})
+    def provider(self, tmp_path):
+        # Isolated state_file per test - MockProvider persists to
+        # ~/.minisky/mock_provider_state.json by default so a VM launched
+        # in one `minisky` invocation is still visible to the next, which
+        # means every test sharing the (conftest-redirected) default path
+        # would otherwise see every other test's leftover VMs too.
+        return MockProvider({'simulate_delay': False, 'state_file': str(tmp_path / 'mock_state.json')})
 
     @pytest.fixture
     def sample_task(self):

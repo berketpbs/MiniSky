@@ -40,7 +40,7 @@ class TestClusterPersistenceAcrossRestart:
     async def test_cluster_survives_a_fresh_controller_pointed_at_the_same_state(self, tmp_path):
         state = _state(tmp_path)
         bus = EventBus()
-        provider = MockProvider({"simulate_delay": False})
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
 
         with patch.object(core_module, "get_provider", return_value=provider):
             controller = ClusterController(bus, state=state)
@@ -88,7 +88,7 @@ class TestClusterPersistenceAcrossRestart:
     async def test_terminated_cluster_removed_from_persistence(self, tmp_path):
         state = _state(tmp_path)
         bus = EventBus()
-        provider = MockProvider({"simulate_delay": False})
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
 
         with patch.object(core_module, "get_provider", return_value=provider):
             controller = ClusterController(bus, state=state)

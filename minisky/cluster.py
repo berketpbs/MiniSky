@@ -12,6 +12,8 @@ from enum import Enum
 from rich.console import Console
 from rich.table import Table
 
+from .providers import get_provider
+
 console = Console()
 
 
@@ -30,6 +32,11 @@ class ClusterNode:
     private_ip: Optional[str] = None
     rank: int = 0
     status: str = "running"
+    # Which provider this node's vm_id belongs to - needed to resolve the
+    # right provider.terminate()/status() when a ClusterManager wasn't
+    # constructed with one up front (e.g. `minisky cluster status/
+    # terminate` in a fresh process, which only knows the cluster_id).
+    provider: str = "mock"
     
     @property
     def is_head(self) -> bool:
@@ -157,18 +164,66 @@ class ClusterManager:
         manager.run_distributed(cluster, "python train.py")
     """
     
-    def __init__(self, state_manager: Any, provider: Any):
+    def __init__(self, state_manager: Any, provider: Optional[Any] = None):
         """
         Initialize cluster manager.
-        
+
         Args:
             state_manager: StateManager instance
-            provider: Cloud provider instance
+            provider: Cloud provider instance, required for create_cluster().
+                Optional for read-only use (get_cluster()/list_clusters()/
+                display_cluster()) or terminate_cluster(), which resolves
+                each node's own provider from its persisted VM record
+                instead - a fresh CLI process calling `minisky cluster
+                status/terminate <id>` only knows the cluster_id, not
+                which provider it used.
         """
         self.state = state_manager
         self.provider = provider
         self._clusters: Dict[str, Cluster] = {}
-    
+        self._load_clusters()
+
+    def _load_clusters(self):
+        """
+        Reconstruct clusters from persisted VM records on startup.
+
+        ClusterManager has no dedicated persistence table of its own -
+        create_cluster() already stores each node as a regular VM record
+        (via state.add_vm()) tagged with cluster_id/node_role/rank in its
+        metadata, so a fresh ClusterManager (e.g. a new `minisky cluster
+        ...` CLI invocation) can rebuild the full picture just by
+        grouping state.list_vms() by cluster_id.
+        """
+        by_cluster: Dict[str, List[Dict[str, Any]]] = {}
+        for vm in self.state.list_vms():
+            cluster_id = vm.get('cluster_id')
+            if cluster_id:
+                by_cluster.setdefault(cluster_id, []).append(vm)
+
+        for cluster_id, vms in by_cluster.items():
+            nodes = []
+            task_name = 'unknown'
+            for vm in vms:
+                role = NodeRole.HEAD if vm.get('node_role') == 'head' else NodeRole.WORKER
+                nodes.append(ClusterNode(
+                    vm_id=vm['vm_id'],
+                    role=role,
+                    ip_address=vm['ip_address'],
+                    private_ip=vm.get('private_ip'),
+                    rank=vm.get('rank', 0 if role == NodeRole.HEAD else 1),
+                    status=vm.get('status', 'running'),
+                    provider=vm.get('provider', 'mock'),
+                ))
+                task_name = vm.get('task_name', task_name)
+
+            nodes.sort(key=lambda n: n.rank)
+            self._clusters[cluster_id] = Cluster(
+                cluster_id=cluster_id,
+                task_name=task_name,
+                num_nodes=len(nodes),
+                nodes=nodes,
+            )
+
     def create_cluster(self, task: Any, num_nodes: int = 2) -> Cluster:
         """
         Create a multi-node cluster.
@@ -181,7 +236,10 @@ class ClusterManager:
             Cluster object
         """
         import uuid
-        
+
+        if self.provider is None:
+            raise ValueError("create_cluster() requires a provider (ClusterManager was constructed without one)")
+
         cluster_id = f"cluster-{uuid.uuid4().hex[:8]}"
         cluster = Cluster(
             cluster_id=cluster_id,
@@ -205,7 +263,8 @@ class ClusterManager:
             role=NodeRole.HEAD,
             ip_address=head_vm['ip_address'],
             private_ip=head_vm.get('private_ip'),
-            rank=0
+            rank=0,
+            provider=task.provider,
         )
         cluster.nodes.append(head_node)
         self.state.add_vm({**head_vm, 'cluster_id': cluster_id, 'node_role': 'head'})
@@ -220,7 +279,8 @@ class ClusterManager:
                 role=NodeRole.WORKER,
                 ip_address=worker_vm['ip_address'],
                 private_ip=worker_vm.get('private_ip'),
-                rank=i
+                rank=i,
+                provider=task.provider,
             )
             cluster.nodes.append(worker_node)
             self.state.add_vm({**worker_vm, 'cluster_id': cluster_id, 'node_role': 'worker', 'rank': i})
@@ -384,11 +444,17 @@ class ClusterManager:
             True if all nodes terminated successfully
         """
         console.print(f"[cyan]Terminating cluster {cluster.cluster_id}...[/cyan]")
-        
+
         success = True
         for node in cluster.nodes:
             try:
-                self.provider.terminate(node.vm_id)
+                # Prefer the manager's own provider if it was given one
+                # (create_cluster's caller usually has it already); fall
+                # back to resolving it fresh from the node's own record -
+                # needed when this manager was only constructed to
+                # terminate a cluster it didn't launch in this process.
+                provider = self.provider or get_provider(node.provider)
+                provider.terminate(node.vm_id)
                 self.state.remove_vm(node.vm_id)
                 console.print(f"[green]✓[/green] Terminated node{node.rank}: {node.vm_id}")
             except Exception as e:

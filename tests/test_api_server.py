@@ -190,10 +190,10 @@ class TestClusterControllerRealProviderWiring:
     """
 
     @pytest.mark.asyncio
-    async def test_launch_calls_provider_and_reaches_up_with_real_vm_info(self):
+    async def test_launch_calls_provider_and_reaches_up_with_real_vm_info(self, tmp_path):
         bus = EventBus()
         controller = ClusterController(bus)
-        provider = MockProvider({"simulate_delay": False})
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
 
         with patch.object(core_module, "get_provider", return_value=provider):
             cluster = await controller.create_cluster(
@@ -236,10 +236,10 @@ class TestClusterControllerRealProviderWiring:
         assert "simulated capacity error" in error_events[-1].payload["reason"]
 
     @pytest.mark.asyncio
-    async def test_stop_and_terminate_call_through_to_the_same_provider(self):
+    async def test_stop_and_terminate_call_through_to_the_same_provider(self, tmp_path):
         bus = EventBus()
         controller = ClusterController(bus)
-        provider = MockProvider({"simulate_delay": False})
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
 
         with patch.object(core_module, "get_provider", return_value=provider):
             cluster = await controller.create_cluster(

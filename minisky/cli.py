@@ -1090,11 +1090,43 @@ def cluster_launch(
     num_nodes: int = typer.Option(2, "--nodes", "-n", help="Number of nodes to launch"),
 ):
     """
-    Launch a multi-node cluster.
+    Launch a multi-node cluster: 1 head node (rank 0) + (num_nodes - 1)
+    worker nodes, all via the provider in task_file, then distributes
+    SSH host entries and a DeepSpeed-style hostfile so the nodes can
+    coordinate.
+
+    Example:
+        minisky cluster launch task.yaml --nodes 4
     """
-    console.print(f"[cyan]Launching {num_nodes}-node cluster using {task_file}...[/cyan]")
-    # Placeholder for actual cluster.py integration
-    console.print("[yellow]Cluster logic is mock-implemented for this CLI endpoint.[/yellow]")
+    from .cluster import ClusterManager
+
+    try:
+        task = Task.from_yaml(task_file)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    provider = get_provider(task.provider)
+    manager = ClusterManager(state, provider)
+
+    try:
+        cluster = manager.create_cluster(task, num_nodes=num_nodes)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    if not manager.setup_networking(cluster, executor_factory=lambda vm_info: Executor(vm_info)):
+        console.print(
+            "[yellow]Warning:[/yellow] cluster networking setup failed - "
+            "nodes are up but may not be able to coordinate via hostfile/hostnames. "
+            "Individual nodes are still usable via 'minisky exec'/'minisky ssh'."
+        )
+
+    manager.display_cluster(cluster)
+    console.print(f"\nTo run a distributed command: minisky cluster run {cluster.cluster_id} \"python train.py\"")
+    console.print(f"To check status: minisky cluster status {cluster.cluster_id}")
+    console.print(f"To terminate: minisky cluster terminate {cluster.cluster_id}")
+
 
 @cluster_app.command("status")
 def cluster_status(
@@ -1102,9 +1134,20 @@ def cluster_status(
 ):
     """
     Check status of a cluster.
+
+    Example:
+        minisky cluster status cluster-abc12345
     """
-    console.print(f"[cyan]Status for cluster: {cluster_id}[/cyan]")
-    # Placeholder for actual cluster.py integration
+    from .cluster import ClusterManager
+
+    manager = ClusterManager(state)
+    cluster = manager.get_cluster(cluster_id)
+    if not cluster:
+        console.print(f"[red]Cluster not found:[/red] {cluster_id}")
+        raise typer.Exit(1)
+
+    manager.display_cluster(cluster)
+
 
 @cluster_app.command("terminate")
 def cluster_terminate(
@@ -1112,14 +1155,70 @@ def cluster_terminate(
     force: bool = typer.Option(False, "--force", "-f", help="Skip confirmation"),
 ):
     """
-    Terminate a multi-node cluster.
+    Terminate a multi-node cluster (all nodes).
+
+    Example:
+        minisky cluster terminate cluster-abc12345
     """
+    from .cluster import ClusterManager
+
+    manager = ClusterManager(state)
+    cluster = manager.get_cluster(cluster_id)
+    if not cluster:
+        console.print(f"[red]Cluster not found:[/red] {cluster_id}")
+        raise typer.Exit(1)
+
     if not force:
-        if not typer.confirm(f"Terminate cluster {cluster_id}?"):
+        if not typer.confirm(f"Terminate cluster {cluster_id} ({len(cluster.nodes)} nodes)?"):
             console.print("[yellow]Cancelled[/yellow]")
             return
+
     console.print(f"[red]Terminating cluster {cluster_id}...[/red]")
-    # Placeholder for actual cluster.py integration
+    if manager.terminate_cluster(cluster):
+        console.print(f"[green]✓[/green] Cluster terminated: {cluster_id}")
+    else:
+        console.print(
+            f"[red]Some nodes failed to terminate.[/red] "
+            f"Cluster left trackable - retry with: minisky cluster terminate {cluster_id}"
+        )
+        raise typer.Exit(1)
+
+
+@cluster_app.command("run")
+def cluster_run(
+    cluster_id: str = typer.Argument(..., help="Cluster ID"),
+    command: str = typer.Argument(..., help="Command to run on every node"),
+    torchrun: bool = typer.Option(True, "--torchrun/--no-torchrun", help="Wrap the command with torchrun for distributed training"),
+    nproc_per_node: int = typer.Option(1, "--nproc-per-node", help="Processes per node (torchrun only)"),
+):
+    """
+    Run a command on every node in a cluster.
+
+    Example:
+        minisky cluster run cluster-abc12345 "python train.py --epochs 10"
+        minisky cluster run cluster-abc12345 "nvidia-smi" --no-torchrun
+    """
+    from .cluster import ClusterManager
+
+    manager = ClusterManager(state)
+    cluster = manager.get_cluster(cluster_id)
+    if not cluster:
+        console.print(f"[red]Cluster not found:[/red] {cluster_id}")
+        raise typer.Exit(1)
+
+    results = manager.run_distributed(
+        cluster,
+        command,
+        executor_factory=lambda vm_info: Executor(vm_info),
+        use_torchrun=torchrun,
+        nproc_per_node=nproc_per_node,
+    )
+
+    failures = {vm_id: code for vm_id, code in results.items() if code != 0}
+    if failures:
+        console.print(f"\n[red]{len(failures)}/{len(results)} node(s) failed[/red]")
+        raise typer.Exit(1)
+    console.print(f"\n[green]✓[/green] Command succeeded on all {len(results)} nodes")
 
 
 # --- Queue ---

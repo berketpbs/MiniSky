@@ -28,9 +28,9 @@ def state_manager(tmp_path):
 
 
 @pytest.fixture
-def mock_provider():
-    """Create a mock provider with no delays."""
-    return MockProvider(config={"simulate_delay": False})
+def mock_provider(tmp_path):
+    """Create a mock provider with no delays, isolated persisted state."""
+    return MockProvider(config={"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
 
 
 @pytest.fixture
