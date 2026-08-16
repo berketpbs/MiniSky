@@ -103,3 +103,57 @@ class TestStateManager:
     def test_empty_list(self, state_mgr):
         vms = state_mgr.list_vms()
         assert vms == []
+
+
+class TestClusterPersistence:
+    """Tests for the API server's cluster persistence methods."""
+
+    def test_save_and_get_cluster(self, state_mgr):
+        state_mgr.save_cluster("sky-1", {"cluster_id": "sky-1", "state": "up"})
+        data = state_mgr.get_cluster_data("sky-1")
+        assert data == {"cluster_id": "sky-1", "state": "up"}
+
+    def test_get_missing_cluster(self, state_mgr):
+        assert state_mgr.get_cluster_data("nonexistent") is None
+
+    def test_save_cluster_upserts(self, state_mgr):
+        state_mgr.save_cluster("sky-1", {"cluster_id": "sky-1", "state": "init"})
+        state_mgr.save_cluster("sky-1", {"cluster_id": "sky-1", "state": "up"})
+        assert state_mgr.get_cluster_data("sky-1")["state"] == "up"
+        assert len(state_mgr.list_cluster_data()) == 1
+
+    def test_list_cluster_data(self, state_mgr):
+        state_mgr.save_cluster("sky-1", {"cluster_id": "sky-1"})
+        state_mgr.save_cluster("sky-2", {"cluster_id": "sky-2"})
+        assert len(state_mgr.list_cluster_data()) == 2
+
+    def test_delete_cluster(self, state_mgr):
+        state_mgr.save_cluster("sky-1", {"cluster_id": "sky-1"})
+        assert state_mgr.delete_cluster("sky-1") is True
+        assert state_mgr.get_cluster_data("sky-1") is None
+
+    def test_delete_missing_cluster(self, state_mgr):
+        assert state_mgr.delete_cluster("nonexistent") is False
+
+
+class TestJobPersistence:
+    """Tests for the API server's job persistence methods."""
+
+    def test_save_and_get_job(self, state_mgr):
+        state_mgr.save_job("job-1", {"job_id": "job-1", "state": "running"})
+        data = state_mgr.get_job_data("job-1")
+        assert data == {"job_id": "job-1", "state": "running"}
+
+    def test_get_missing_job(self, state_mgr):
+        assert state_mgr.get_job_data("nonexistent") is None
+
+    def test_save_job_upserts(self, state_mgr):
+        state_mgr.save_job("job-1", {"job_id": "job-1", "state": "pending"})
+        state_mgr.save_job("job-1", {"job_id": "job-1", "state": "succeeded"})
+        assert state_mgr.get_job_data("job-1")["state"] == "succeeded"
+        assert len(state_mgr.list_job_data()) == 1
+
+    def test_delete_job(self, state_mgr):
+        state_mgr.save_job("job-1", {"job_id": "job-1"})
+        assert state_mgr.delete_job("job-1") is True
+        assert state_mgr.get_job_data("job-1") is None

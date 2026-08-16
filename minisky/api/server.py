@@ -31,7 +31,7 @@ from minisky.api.core import (
 # Global instances (would be dependency injected in production)
 event_bus = EventBus()
 cluster_controller = ClusterController(event_bus)
-job_controller = JobController(event_bus, cluster_controller)
+job_controller = JobController(event_bus, cluster_controller, state=cluster_controller.state)
 
 
 @asynccontextmanager

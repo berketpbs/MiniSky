@@ -52,6 +52,26 @@ class StateManager:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # Used by the API server's ClusterController/JobController
+            # (minisky/api/core.py) to survive restarts. Stored as a single
+            # JSON blob per row rather than individual columns since
+            # ClusterRecord/JobRecord are rich, API-layer-specific domain
+            # objects (not the CLI's VM schema above) that don't need to be
+            # queried by anything other than id/list-all.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS clusters (
+                    cluster_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS jobs (
+                    job_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             conn.commit()
     
     @contextmanager
@@ -199,10 +219,10 @@ class StateManager:
     def cleanup_terminated(self, older_than_days: int = 7) -> int:
         """
         Remove terminated VMs older than specified days.
-        
+
         Args:
             older_than_days: Remove VMs terminated more than this many days ago
-            
+
         Returns:
             Number of VMs removed
         """
@@ -214,3 +234,77 @@ class StateManager:
             ''', (older_than_days,))
             conn.commit()
             return cursor.rowcount
+
+    # -------------------------------------------------------------------
+    # API server persistence: clusters
+    # -------------------------------------------------------------------
+
+    def save_cluster(self, cluster_id: str, data: Dict[str, Any]) -> None:
+        """Upsert a cluster record (API server's ClusterRecord, as a dict)."""
+        with self._get_connection() as conn:
+            conn.execute('''
+                INSERT INTO clusters (cluster_id, data, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(cluster_id) DO UPDATE SET
+                    data = excluded.data,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (cluster_id, json.dumps(data)))
+            conn.commit()
+
+    def get_cluster_data(self, cluster_id: str) -> Optional[Dict[str, Any]]:
+        """Get a persisted cluster record by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                'SELECT data FROM clusters WHERE cluster_id = ?', (cluster_id,)
+            ).fetchone()
+            return json.loads(row['data']) if row else None
+
+    def list_cluster_data(self) -> List[Dict[str, Any]]:
+        """List all persisted cluster records."""
+        with self._get_connection() as conn:
+            rows = conn.execute('SELECT data FROM clusters').fetchall()
+            return [json.loads(row['data']) for row in rows]
+
+    def delete_cluster(self, cluster_id: str) -> bool:
+        """Remove a persisted cluster record."""
+        with self._get_connection() as conn:
+            cursor = conn.execute('DELETE FROM clusters WHERE cluster_id = ?', (cluster_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
+    # API server persistence: jobs
+    # -------------------------------------------------------------------
+
+    def save_job(self, job_id: str, data: Dict[str, Any]) -> None:
+        """Upsert a job record (API server's JobRecord, as a dict)."""
+        with self._get_connection() as conn:
+            conn.execute('''
+                INSERT INTO jobs (job_id, data, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    data = excluded.data,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (job_id, json.dumps(data)))
+            conn.commit()
+
+    def get_job_data(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get a persisted job record by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                'SELECT data FROM jobs WHERE job_id = ?', (job_id,)
+            ).fetchone()
+            return json.loads(row['data']) if row else None
+
+    def list_job_data(self) -> List[Dict[str, Any]]:
+        """List all persisted job records."""
+        with self._get_connection() as conn:
+            rows = conn.execute('SELECT data FROM jobs').fetchall()
+            return [json.loads(row['data']) for row in rows]
+
+    def delete_job(self, job_id: str) -> bool:
+        """Remove a persisted job record."""
+        with self._get_connection() as conn:
+            cursor = conn.execute('DELETE FROM jobs WHERE job_id = ?', (job_id,))
+            conn.commit()
+            return cursor.rowcount > 0

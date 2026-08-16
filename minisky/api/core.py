@@ -7,15 +7,20 @@ ResourceController) that minisky/api/server.py's FastAPI routes delegate
 to. Kept separate from server.py so this layer can be imported/tested
 without pulling in FastAPI, and so it's reusable outside the HTTP API.
 
-Note on scope: ClusterController/JobController track state in memory
-only - they don't persist to StateManager/JobQueue, so cluster/job
-records don't survive a server restart, and a job with no cluster_id
-fails clearly rather than auto-provisioning one (that scheduling logic
-was never built). That persistence/scheduling work is a deliberate
-follow-up, not done here.
+Note on scope: ClusterController/JobController persist to StateManager
+(cluster/job records survive a server restart), but a job with no
+cluster_id still fails clearly rather than auto-provisioning one -
+that scheduling logic was never built, and is a separate concern from
+persistence. Also, an in-flight background operation (a launch/stop/
+terminate/job execution actually running) is lost on restart even
+though the record survives - see ClusterController._load_clusters()/
+JobController._load_jobs() for how that's handled: anything caught
+mid-transition is marked ERROR/FAILED on load rather than resumed,
+since there's no way to know what actually happened to it.
 """
 
 import asyncio
+import dataclasses
 import logging
 import uuid
 from datetime import datetime
@@ -31,6 +36,7 @@ from minisky.providers.base import BaseProvider
 from minisky.task import Task, ResourceRequirements
 from minisky.executor import Executor, ExecutorError
 from minisky.queue import JobStatus
+from minisky.state import StateManager
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +172,41 @@ class JobRecord:
     log_path: Optional[str] = None
     exit_code: Optional[int] = None
     failure_reason: Optional[str] = None
+
+
+# =============================================================================
+# Persistence helpers (ClusterRecord/JobRecord <-> JSON, via StateManager)
+# =============================================================================
+
+def _record_to_dict(record: Any) -> Dict[str, Any]:
+    """Serialize a ClusterRecord/JobRecord to a JSON-safe dict."""
+    d = dataclasses.asdict(record)
+    for key, value in d.items():
+        if isinstance(value, Enum):
+            d[key] = value.value
+        elif isinstance(value, datetime):
+            d[key] = value.isoformat()
+    return d
+
+
+def _cluster_from_dict(data: Dict[str, Any]) -> ClusterRecord:
+    """Deserialize a persisted dict back into a ClusterRecord."""
+    d = dict(data)
+    d["state"] = ClusterState(d["state"])
+    for key in ("launched_at", "last_use"):
+        if d.get(key):
+            d[key] = datetime.fromisoformat(d[key])
+    return ClusterRecord(**d)
+
+
+def _job_from_dict(data: Dict[str, Any]) -> JobRecord:
+    """Deserialize a persisted dict back into a JobRecord."""
+    d = dict(data)
+    d["state"] = JobState(d["state"])
+    for key in ("submitted_at", "started_at", "ended_at"):
+        if d.get(key):
+            d[key] = datetime.fromisoformat(d[key])
+    return JobRecord(**d)
 
 
 # =============================================================================
@@ -305,10 +346,41 @@ class ClusterController:
                          -> ERROR (from any state)
     """
 
-    def __init__(self, event_bus: EventBus):
+    # Cluster states that mean "a background task is actively driving this
+    # forward right now". Nothing in memory survives a restart, so if a
+    # cluster is loaded from disk in one of these, that background task is
+    # definitely gone and the cluster's real status is unknown - it's
+    # marked ERROR rather than left looking like work is still happening.
+    _IN_FLIGHT_STATES = (ClusterState.LAUNCHING, ClusterState.STOPPING, ClusterState.TERMINATING)
+
+    def __init__(self, event_bus: EventBus, state: Optional[StateManager] = None):
         self.event_bus = event_bus
+        self.state = state or StateManager()
         self._clusters: Dict[str, ClusterRecord] = {}
         self._state_locks: Dict[str, asyncio.Lock] = {}
+        self._load_clusters()
+
+    def _load_clusters(self):
+        """Load persisted clusters on startup."""
+        for data in self.state.list_cluster_data():
+            try:
+                cluster = _cluster_from_dict(data)
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Skipping unreadable persisted cluster record: {e}")
+                continue
+
+            if cluster.state in self._IN_FLIGHT_STATES:
+                cluster.state = ClusterState.ERROR
+                self._persist_cluster(cluster)
+                logger.warning(
+                    f"Cluster {cluster.cluster_id} was {data['state']} when the server "
+                    f"last stopped - marked ERROR, its real status is unknown."
+                )
+
+            self._clusters[cluster.cluster_id] = cluster
+
+    def _persist_cluster(self, cluster: ClusterRecord):
+        self.state.save_cluster(cluster.cluster_id, _record_to_dict(cluster))
 
     async def _get_lock(self, cluster_id: str) -> asyncio.Lock:
         """Get or create lock for cluster."""
@@ -343,6 +415,7 @@ class ClusterController:
             raise ValueError(f"Invalid state transition: {old_state} -> {new_state}")
 
         cluster.state = new_state
+        self._persist_cluster(cluster)
 
         await self.event_bus.publish(
             Event(
@@ -377,6 +450,7 @@ class ClusterController:
         )
 
         self._clusters[cluster_id] = cluster
+        self._persist_cluster(cluster)
         return cluster
 
     async def launch_cluster(self, cluster_id: str) -> ClusterRecord:
@@ -515,6 +589,7 @@ class ClusterController:
             # Clean up
             del self._clusters[cluster.cluster_id]
             del self._state_locks[cluster.cluster_id]
+            self.state.delete_cluster(cluster.cluster_id)
         except Exception as e:
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.ERROR, reason=str(e))
@@ -544,14 +619,45 @@ class JobController:
     forwarding output live as LOG_LINE events.
     """
 
+    # Job states meaning "a background task is actively driving this
+    # forward right now" - see ClusterController._IN_FLIGHT_STATES for why
+    # these get corrected on load rather than trusted as-is.
+    _IN_FLIGHT_STATES = (JobState.SETTING_UP, JobState.RUNNING, JobState.RECOVERING)
+
     def __init__(
         self,
         event_bus: EventBus,
-        cluster_controller: ClusterController
+        cluster_controller: ClusterController,
+        state: Optional[StateManager] = None,
     ):
         self.event_bus = event_bus
         self.cluster_controller = cluster_controller
+        self.state = state or StateManager()
         self._jobs: Dict[str, JobRecord] = {}
+        self._load_jobs()
+
+    def _load_jobs(self):
+        """Load persisted jobs on startup."""
+        for data in self.state.list_job_data():
+            try:
+                job = _job_from_dict(data)
+            except (KeyError, ValueError) as e:
+                logger.warning(f"Skipping unreadable persisted job record: {e}")
+                continue
+
+            if job.state in self._IN_FLIGHT_STATES:
+                job.state = JobState.FAILED
+                job.failure_reason = (
+                    f"Job was {data['state']} when the server last stopped - its real "
+                    f"outcome is unknown, since whatever was executing it is gone."
+                )
+                job.ended_at = datetime.utcnow()
+                self._persist_job(job)
+
+            self._jobs[job.job_id] = job
+
+    def _persist_job(self, job: JobRecord):
+        self.state.save_job(job.job_id, _record_to_dict(job))
 
     async def submit_job(
         self,
@@ -582,6 +688,7 @@ class JobController:
         )
 
         self._jobs[job_id] = job
+        self._persist_job(job)
 
         await self.event_bus.publish(
             Event(
@@ -741,6 +848,7 @@ class JobController:
         new_state: JobState
     ):
         """Emit job state change event."""
+        self._persist_job(job)
         await self.event_bus.publish(
             Event(
                 event_type=EventType.JOB_STATE_CHANGE,
