@@ -18,7 +18,6 @@ from minisky.api.core import (
     ClusterController,
     ProviderRegistry,
 )
-from minisky.state import StateManager
 from minisky.queue import JobStatus
 
 
@@ -158,25 +157,10 @@ class TestEvent:
 class TestClusterController:
     """Test cluster state machine transitions."""
 
-    @pytest.fixture
-    def state_manager(self, tmp_path):
-        return StateManager(db_path=str(tmp_path / "test_api_state.db"))
-
     @pytest.mark.asyncio
-    async def test_valid_transitions(self, state_manager):
+    async def test_valid_transitions(self):
         bus = EventBus()
-        controller = ClusterController(state_manager, bus)
-
-        # We need a VM in state for update_status to work
-        state_manager.add_vm({
-            "vm_id": "test-cluster",
-            "ip_address": "127.0.0.1",
-            "ssh_port": 22,
-            "ssh_user": "root",
-            "status": "pending",
-            "provider": "mock",
-            "task_name": "test",
-        })
+        controller = ClusterController(bus)
 
         cluster = ClusterRecord(
             cluster_id="test-cluster",
@@ -211,9 +195,9 @@ class TestClusterController:
         assert cluster.state == ClusterState.TERMINATED
 
     @pytest.mark.asyncio
-    async def test_invalid_transition_raises(self, state_manager):
+    async def test_invalid_transition_raises(self):
         bus = EventBus()
-        controller = ClusterController(state_manager, bus)
+        controller = ClusterController(bus)
 
         cluster = ClusterRecord(
             cluster_id="test-invalid",
@@ -226,21 +210,12 @@ class TestClusterController:
             await controller._transition_state(cluster, ClusterState.UP)
 
     @pytest.mark.asyncio
-    async def test_error_from_any_state(self, state_manager):
+    async def test_error_from_any_state(self):
         bus = EventBus()
-        controller = ClusterController(state_manager, bus)
+        controller = ClusterController(bus)
 
         for initial_state in [ClusterState.INIT, ClusterState.LAUNCHING, ClusterState.UP]:
             vm_id = f"test-error-{initial_state.value}"
-            state_manager.add_vm({
-                "vm_id": vm_id,
-                "ip_address": "127.0.0.1",
-                "ssh_port": 22,
-                "ssh_user": "root",
-                "status": "running",
-                "provider": "mock",
-                "task_name": "test",
-            })
 
             cluster = ClusterRecord(
                 cluster_id=vm_id,
@@ -253,9 +228,9 @@ class TestClusterController:
             assert cluster.state == ClusterState.ERROR
 
     @pytest.mark.asyncio
-    async def test_terminated_is_terminal(self, state_manager):
+    async def test_terminated_is_terminal(self):
         bus = EventBus()
-        controller = ClusterController(state_manager, bus)
+        controller = ClusterController(bus)
 
         cluster = ClusterRecord(
             cluster_id="test-terminal",
@@ -268,20 +243,10 @@ class TestClusterController:
             await controller._transition_state(cluster, ClusterState.LAUNCHING)
 
     @pytest.mark.asyncio
-    async def test_transition_emits_event(self, state_manager):
+    async def test_transition_emits_event(self):
         bus = EventBus()
         q = await bus.subscribe()
-        controller = ClusterController(state_manager, bus)
-
-        state_manager.add_vm({
-            "vm_id": "test-event",
-            "ip_address": "127.0.0.1",
-            "ssh_port": 22,
-            "ssh_user": "root",
-            "status": "pending",
-            "provider": "mock",
-            "task_name": "test",
-        })
+        controller = ClusterController(bus)
 
         cluster = ClusterRecord(
             cluster_id="test-event",

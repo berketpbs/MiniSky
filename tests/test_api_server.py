@@ -1,7 +1,7 @@
 """
-Tests for minisky/api/server.py - the FastAPI app actually served by
-`minisky serve` (distinct from minisky/api/core.py, which is a separate,
-parallel implementation covered by tests/test_api.py).
+Tests for the ClusterController/JobController/EventBus business logic in
+minisky/api/core.py, and for the thin FastAPI app in minisky/api/server.py
+that delegates to them.
 """
 
 import asyncio
@@ -11,9 +11,9 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-import minisky.api.server as server_module
-from minisky.api.server import (
-    app,
+import minisky.api.core as core_module
+from minisky.api.server import app
+from minisky.api.core import (
     Event,
     EventBus,
     EventType,
@@ -42,7 +42,7 @@ class TestEventBusTopic:
     @pytest.mark.asyncio
     async def test_publish_stamps_topic_and_serializes_it(self):
         bus = EventBus()
-        queue = bus.subscribe(topic="job:abc")
+        queue = await bus.subscribe(topic="job:abc")
 
         event = Event(event_type=EventType.JOB_STATE_CHANGE, payload={"job_id": "abc"})
         await bus.publish(event, topic="job:abc")
@@ -54,7 +54,7 @@ class TestEventBusTopic:
     @pytest.mark.asyncio
     async def test_global_subscriber_also_sees_stamped_topic(self):
         bus = EventBus()
-        queue = bus.subscribe()  # global, no topic filter
+        queue = await bus.subscribe()  # global, no topic filter
 
         event = Event(event_type=EventType.JOB_STATE_CHANGE, payload={})
         await bus.publish(event, topic="cluster:xyz")
@@ -65,28 +65,37 @@ class TestEventBusTopic:
 
 class TestEventBusConcurrentMutation:
     @pytest.mark.asyncio
-    async def test_publish_survives_unsubscribe_during_iteration(self):
-        """A subscriber unsubscribing (e.g. a client disconnecting) while
-        publish() is mid-iteration must not raise
-        'RuntimeError: Set changed size during iteration'."""
+    async def test_publish_serializes_against_concurrent_unsubscribe(self):
+        """A subscriber disconnecting (unsubscribing) from a separate task
+        while publish() is mid-flight in another task must not raise
+        'RuntimeError: Set changed size during iteration', and must not
+        deadlock - EventBus's lock means the unsubscribe simply waits its
+        turn rather than racing the iteration."""
         bus = EventBus()
-        other_queue = bus.subscribe()
+        other_queue = await bus.subscribe()
 
-        class TriggeringQueue:
+        class SlowQueue:
             def __init__(self):
                 self.items = []
 
             async def put(self, item):
-                bus.unsubscribe(other_queue)
+                # Give a concurrently-scheduled unsubscribe() a chance to
+                # actually run (and prove it blocks on the lock, not race).
+                await asyncio.sleep(0.05)
                 self.items.append(item)
 
-        trigger_queue = TriggeringQueue()
-        bus._global_subscribers.add(trigger_queue)
+        slow_queue = SlowQueue()
+        bus._global_subscribers.add(slow_queue)
 
         event = Event(event_type=EventType.ERROR, payload={})
-        await bus.publish(event)  # must not raise
+        publish_task = asyncio.create_task(bus.publish(event))
+        await asyncio.sleep(0.01)  # let publish() acquire the lock first
+        unsub_task = asyncio.create_task(bus.unsubscribe(other_queue))
 
-        assert trigger_queue.items == [event]
+        await asyncio.wait_for(publish_task, timeout=2.0)
+        await asyncio.wait_for(unsub_task, timeout=2.0)
+
+        assert slow_queue.items == [event]
         assert other_queue not in bus._global_subscribers
 
 
@@ -186,7 +195,7 @@ class TestClusterControllerRealProviderWiring:
         controller = ClusterController(bus)
         provider = MockProvider({"simulate_delay": False})
 
-        with patch.object(server_module, "get_provider", return_value=provider):
+        with patch.object(core_module, "get_provider", return_value=provider):
             cluster = await controller.create_cluster(
                 name="c1", provider="mock", accelerators={"A100": 1}
             )
@@ -214,7 +223,7 @@ class TestClusterControllerRealProviderWiring:
             def launch(self, task):
                 raise ProviderError("simulated capacity error")
 
-        with patch.object(server_module, "get_provider", return_value=FailingProvider()):
+        with patch.object(core_module, "get_provider", return_value=FailingProvider()):
             cluster = await controller.create_cluster(
                 name="c2", provider="mock", accelerators={"A100": 1}
             )
@@ -232,7 +241,7 @@ class TestClusterControllerRealProviderWiring:
         controller = ClusterController(bus)
         provider = MockProvider({"simulate_delay": False})
 
-        with patch.object(server_module, "get_provider", return_value=provider):
+        with patch.object(core_module, "get_provider", return_value=provider):
             cluster = await controller.create_cluster(
                 name="c3", provider="mock", accelerators={"T4": 1}
             )
@@ -296,7 +305,7 @@ class TestJobExecutionRealSSH:
             cluster_id=cluster.cluster_id,
         )
 
-        with patch.object(server_module, "Executor", mock_executor_cls):
+        with patch.object(core_module, "Executor", mock_executor_cls):
             await job_controller._execute_job(job)
 
         assert job.state == JobState.SUCCEEDED
@@ -345,9 +354,9 @@ class TestJobExecutionRealSSH:
             cluster_id=cluster.cluster_id,
         )
 
-        queue = bus.subscribe(topic=f"job:{job.job_id}")
+        queue = await bus.subscribe(topic=f"job:{job.job_id}")
 
-        with patch.object(server_module, "Executor", mock_executor_cls):
+        with patch.object(core_module, "Executor", mock_executor_cls):
             await job_controller._execute_job(job)
 
         assert job.state == JobState.SUCCEEDED
@@ -395,7 +404,7 @@ class TestJobExecutionRealSSH:
             cluster_id=cluster.cluster_id,
         )
 
-        with patch.object(server_module, "Executor", mock_executor_cls):
+        with patch.object(core_module, "Executor", mock_executor_cls):
             await job_controller._execute_job(job)
 
         assert job.state == JobState.FAILED
