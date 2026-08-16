@@ -28,6 +28,10 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Back
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from minisky.providers import get_provider
+from minisky.providers.base import ProviderError
+from minisky.task import Task, ResourceRequirements
+
 
 # =============================================================================
 # Domain Models (Not DTOs - these represent real domain concepts)
@@ -77,6 +81,13 @@ class ClusterRecord:
     # Network
     head_ip: Optional[str] = None
     worker_ips: List[str] = field(default_factory=list)
+    ssh_port: int = 22
+    ssh_user: Optional[str] = None
+
+    # Underlying VM identity, as returned by the provider (e.g.
+    # "mock-abc123", "runpod-xxx", "aws-i-xxx") - required to call
+    # provider.status()/stop()/terminate() on the right instance.
+    vm_id: Optional[str] = None
     
     # Lifecycle
     launched_at: Optional[datetime] = None
@@ -306,28 +317,41 @@ class ClusterController:
         
         async with await self._get_lock(cluster_id):
             await self._transition_state(cluster, ClusterState.LAUNCHING)
-        
-        # Actual launch would happen here via provider
-        # For now, simulate async launch
+
         asyncio.create_task(self._do_launch(cluster))
-        
+
         return cluster
-    
+
+    @staticmethod
+    def _build_launch_task(cluster: ClusterRecord) -> Task:
+        """Build a minimal Task to hand to provider.launch() for a bare
+        cluster provision. Setup/run commands aren't part of cluster
+        launch - those are supplied separately when a job is submitted."""
+        gpu_name, gpu_count = None, 1
+        if cluster.accelerators:
+            gpu_name, gpu_count = next(iter(cluster.accelerators.items()))
+
+        return Task(
+            name=cluster.name,
+            provider=cluster.provider,
+            resources=ResourceRequirements(gpu=gpu_name, gpu_count=gpu_count),
+            run=["true"],
+        )
+
     async def _do_launch(self, cluster: ClusterRecord):
-        """Background task to actually launch cluster."""
+        """Background task to actually launch the cluster's VM via its provider."""
         try:
-            # Simulate launch time
-            await asyncio.sleep(2)
-            
-            # In real implementation:
-            # 1. Call provider.launch()
-            # 2. Wait for VM to be ready
-            # 3. Setup SSH
-            # 4. Run setup commands
-            
-            cluster.head_ip = "10.0.0.1"  # Would come from provider
+            provider = get_provider(cluster.provider)
+            task = self._build_launch_task(cluster)
+            vm_info = await asyncio.to_thread(provider.launch, task)
+
+            cluster.vm_id = vm_info["vm_id"]
+            cluster.head_ip = vm_info["ip_address"]
+            cluster.ssh_port = vm_info.get("ssh_port", 22)
+            cluster.ssh_user = vm_info.get("ssh_user")
+            cluster.instance_type = vm_info.get("instance_type", cluster.instance_type)
             cluster.launched_at = datetime.utcnow()
-            
+
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.UP)
                 
@@ -352,9 +376,11 @@ class ClusterController:
         return cluster
     
     async def _do_stop(self, cluster: ClusterRecord):
-        """Background task to stop cluster."""
+        """Background task to stop the cluster's VM via its provider."""
         try:
-            await asyncio.sleep(1)
+            if cluster.vm_id:
+                provider = get_provider(cluster.provider)
+                await asyncio.to_thread(provider.stop, cluster.vm_id)
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.STOPPED)
         except Exception as e:
@@ -374,9 +400,11 @@ class ClusterController:
         return cluster
     
     async def _do_terminate(self, cluster: ClusterRecord):
-        """Background task to terminate cluster."""
+        """Background task to terminate the cluster's VM via its provider."""
         try:
-            await asyncio.sleep(1)
+            if cluster.vm_id:
+                provider = get_provider(cluster.provider)
+                await asyncio.to_thread(provider.terminate, cluster.vm_id)
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.TERMINATED)
             
@@ -463,7 +491,16 @@ class JobController:
         return job
     
     async def _execute_job(self, job: JobRecord):
-        """Execute job on cluster."""
+        """
+        Execute job on cluster.
+
+        Note: unlike ClusterController (which now calls the real provider
+        via get_provider()), this still simulates execution with
+        asyncio.sleep() rather than actually SSHing in and running
+        setup/run via Executor. Wiring that up is separate follow-up work
+        (needs asyncio.to_thread around the blocking paramiko-based
+        Executor, plus deciding how LOG_LINE events stream command output).
+        """
         try:
             # Find or wait for cluster
             if job.cluster_id:
