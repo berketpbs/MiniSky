@@ -98,6 +98,7 @@ minisky rsync <vm-id> ./local ~/remote             # Quick rsync shortcut
 ```bash
 minisky check                     # Verify setup and provider credentials
 minisky gpus                      # Browse GPU pricing/availability across providers
+minisky optimize task.yaml         # Rank providers/prices for a task without launching
 minisky cost-report                # Cost report across all tracked VMs
 minisky config show|set|get|unset  # Manage ~/.minisky/config.yaml
 minisky cluster launch|status|terminate   # Multi-node cluster management

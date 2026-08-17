@@ -12,6 +12,7 @@ from unittest.mock import patch, MagicMock
 from typer.testing import CliRunner
 from minisky.cli import app
 from minisky.cli import _spawn_autostop_watcher as _real_spawn_autostop_watcher
+from minisky.cli import _find_catalog_entry
 from minisky.state import StateManager
 
 runner = CliRunner()
@@ -401,3 +402,169 @@ class TestSpawnAutostopWatcher:
             _real_spawn_autostop_watcher("mock-abc123", 30)
 
         assert popen_cls.call_args.kwargs["start_new_session"] is True
+
+
+# ---------------------------------------------------------------------------
+# Cost report command tests
+# ---------------------------------------------------------------------------
+
+class TestOptimizeCommand:
+    """Test 'minisky optimize' command."""
+
+    def test_optimize_with_gpu_task(self, mock_config, tmp_path):
+        task_file = tmp_path / "task.yaml"
+        task_file.write_text("name: t\nresources:\n  gpu: A100\nrun:\n  - echo hi\n")
+
+        result = runner.invoke(app, ["optimize", str(task_file)])
+
+        assert result.exit_code == 0
+        assert "mock" in result.output
+        assert "Recommended" in result.output
+
+    def test_optimize_missing_file(self, mock_config, tmp_path):
+        result = runner.invoke(app, ["optimize", str(tmp_path / "nope.yaml")])
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+
+class TestFindCatalogEntry:
+    """
+    Unit tests for _find_catalog_entry(), the provider/instance-type/GPU-name
+    lookup used by cost-report to price each VM against GPUCatalog.fetch_all().
+    """
+
+    def test_matches_by_instance_type(self):
+        entries = [
+            {"provider": "aws", "instance_type": "p3.2xlarge", "gpu_name": "V100", "price_per_hour": 3.06},
+            {"provider": "aws", "instance_type": "p4d.24xlarge", "gpu_name": "A100", "price_per_hour": 32.77},
+        ]
+        result = _find_catalog_entry(entries, "aws", instance_type="p3.2xlarge")
+        assert result["price_per_hour"] == 3.06
+
+    def test_instance_type_match_requires_same_provider(self):
+        entries = [{"provider": "gcp", "instance_type": "p3.2xlarge", "price_per_hour": 1.0}]
+        result = _find_catalog_entry(entries, "aws", instance_type="p3.2xlarge")
+        assert result is None
+
+    def test_falls_back_to_gpu_name_substring_match(self):
+        entries = [{"provider": "mock", "gpu_name": "Mock A100 80GB", "price_per_hour": 0.0}]
+        result = _find_catalog_entry(entries, "mock", instance_type=None, gpu_name="A100")
+        assert result is not None
+        assert result["gpu_name"] == "Mock A100 80GB"
+
+    def test_gpu_name_match_is_case_insensitive(self):
+        entries = [{"provider": "runpod", "gpu_name": "NVIDIA A100", "price_per_hour": 1.5}]
+        result = _find_catalog_entry(entries, "runpod", gpu_name="a100")
+        assert result is not None
+
+    def test_no_match_returns_none(self):
+        entries = [{"provider": "aws", "instance_type": "p3.2xlarge", "gpu_name": "V100"}]
+        result = _find_catalog_entry(entries, "aws", instance_type="p4d.24xlarge", gpu_name="H100")
+        assert result is None
+
+    def test_no_instance_type_or_gpu_name_returns_none(self):
+        entries = [{"provider": "aws", "instance_type": "p3.2xlarge", "gpu_name": "V100"}]
+        result = _find_catalog_entry(entries, "aws")
+        assert result is None
+
+
+class TestCostReportCommand:
+    """Test 'minisky cost-report' command."""
+
+    def test_no_vms(self, mock_state, mock_config):
+        result = runner.invoke(app, ["cost-report"])
+        assert result.exit_code == 0
+        assert "No VMs found" in result.output
+
+    def test_does_not_crash_and_shows_free_mock_rate(self, mock_state, mock_config):
+        """
+        Regression test: cost-report used to unconditionally import a
+        nonexistent PriceFetcher class and crash with ImportError on
+        every invocation as soon as any VM existed in state.
+        """
+        mock_state.add_vm({
+            "vm_id": "mock-abc12345",
+            "ip_address": "127.0.0.1",
+            "ssh_port": 22,
+            "ssh_user": "root",
+            "status": "running",
+            "provider": "mock",
+            "task_name": "test-task",
+            "resources": {"gpu": "A100", "gpu_count": 1},
+        })
+
+        result = runner.invoke(app, ["cost-report"])
+
+        assert result.exit_code == 0
+        assert "mock-abc1234" in result.output  # vm_id truncated to 12 chars
+        assert "$0.000" in result.output  # mock catalog is free
+
+    def test_stopped_vm_shows_zero_runtime_and_cost(self, mock_state, mock_config):
+        mock_state.add_vm({
+            "vm_id": "mock-stopped1",
+            "ip_address": "127.0.0.1",
+            "ssh_port": 22,
+            "ssh_user": "root",
+            "status": "stopped",
+            "provider": "mock",
+            "task_name": "test-task",
+            "resources": {"gpu": "A100", "gpu_count": 1},
+        })
+
+        result = runner.invoke(app, ["cost-report"])
+
+        assert result.exit_code == 0
+        assert "0.00" in result.output
+
+    def test_uses_created_at_column_not_metadata(self, mock_state, mock_config):
+        """
+        Regression test: runtime must be derived from the `created_at`
+        column StateManager stamps on every row, not a provider-supplied
+        'launched_at' key that no provider ever actually sets.
+        """
+        mock_state.add_vm({
+            "vm_id": "mock-abc12345",
+            "ip_address": "127.0.0.1",
+            "ssh_port": 22,
+            "ssh_user": "root",
+            "status": "running",
+            "provider": "mock",
+            "task_name": "test-task",
+            "resources": {"gpu": "A100", "gpu_count": 1},
+            "launched_at": None,
+        })
+
+        result = runner.invoke(app, ["cost-report"])
+
+        assert result.exit_code == 0
+        assert "Error" not in result.output
+
+    def test_estimated_price_shown_with_marker_and_footnote(self, mock_state, mock_config):
+        """AWS/GCP catalog entries carry price_is_estimate=True; cost-report
+        should visually flag those rates as estimates, not live quotes."""
+        mock_state.add_vm({
+            "vm_id": "aws-i-12345678",
+            "ip_address": "1.2.3.4",
+            "ssh_port": 22,
+            "ssh_user": "ubuntu",
+            "status": "running",
+            "provider": "aws",
+            "task_name": "test-task",
+            "instance_type": "p3.2xlarge",
+        })
+
+        fake_catalog = [{
+            "provider": "aws",
+            "instance_type": "p3.2xlarge",
+            "gpu_name": "V100",
+            "price_per_hour": 3.06,
+            "price_is_estimate": True,
+            "available": True,
+        }]
+
+        with patch("minisky.catalog.GPUCatalog.fetch_all", return_value=fake_catalog):
+            result = runner.invoke(app, ["cost-report"])
+
+        assert result.exit_code == 0
+        assert "$3.060~" in result.output
+        assert "static price estimate" in result.output

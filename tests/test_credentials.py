@@ -37,9 +37,13 @@ class TestGetApiKey:
             key = creds.get_api_key("runpod")
             assert key == "env-key"
 
-    def test_not_found_returns_none(self, creds):
-        with patch.dict(os.environ, {}, clear=True):
-            key = creds.get_api_key("runpod")
+    def test_not_found_returns_none(self, tmp_path):
+        # Fresh config with no keys set, and ensure env var is not set
+        fresh_config = MiniSkyConfig(config_path=str(tmp_path / "empty_config.yaml"))
+        fresh_creds = CredentialManager(config=fresh_config)
+        with patch.dict(os.environ, {"RUNPOD_API_KEY": ""}, clear=False):
+            os.environ.pop("RUNPOD_API_KEY", None)
+            key = fresh_creds.get_api_key("runpod")
             assert key is None
 
     def test_lambda_key_from_env(self, creds):
@@ -52,9 +56,10 @@ class TestGetApiKey:
         key = creds.get_api_key("RUNPOD")
         assert key == "my-key"
 
-    def test_unknown_provider_no_env_var(self, creds):
-        # Providers not in _ENV_VARS only check config
-        key = creds.get_api_key("unknown_provider")
+    def test_unknown_provider_no_env_var(self, tmp_path):
+        fresh_config = MiniSkyConfig(config_path=str(tmp_path / "empty2.yaml"))
+        fresh_creds = CredentialManager(config=fresh_config)
+        key = fresh_creds.get_api_key("unknown_provider")
         assert key is None
 
 
@@ -69,8 +74,12 @@ class TestIsConfigured:
         config.set("providers.runpod.api_key", "some-key")
         assert creds.is_configured("runpod") is True
 
-    def test_is_configured_false(self, creds):
-        assert creds.is_configured("runpod") is False
+    def test_is_configured_false(self, tmp_path):
+        fresh_config = MiniSkyConfig(config_path=str(tmp_path / "empty3.yaml"))
+        fresh_creds = CredentialManager(config=fresh_config)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNPOD_API_KEY", None)
+            assert fresh_creds.is_configured("runpod") is False
 
     def test_is_configured_from_env(self, creds):
         with patch.dict(os.environ, {"LAMBDA_API_KEY": "lam-key"}):
@@ -84,25 +93,35 @@ class TestIsAwsConfigured:
         assert creds.is_aws_configured() is True
 
     def test_aws_partial_config(self, creds, config):
-        # Only access_key but no secret
+        # Only access_key but no secret — should fall through to boto3
         config.set("providers.aws.access_key_id", "AKIA123")
-        # Should fall through to boto3
-        with patch("minisky.credentials.boto3") as mock_boto3:
-            mock_session = MagicMock()
-            mock_session.get_credentials.return_value = None
-            mock_boto3.Session.return_value = mock_session
+        # boto3 is imported inside the method, mock it at the import level
+        import minisky.credentials as creds_mod
+        original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
+
+        mock_boto3 = MagicMock()
+        mock_session = MagicMock()
+        mock_session.get_credentials.return_value = None
+        mock_boto3.Session.return_value = mock_session
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
             assert creds.is_aws_configured() is False
 
     def test_aws_from_boto3_session(self, creds):
-        with patch("minisky.credentials.boto3") as mock_boto3:
-            mock_session = MagicMock()
-            mock_session.get_credentials.return_value = MagicMock()
-            mock_boto3.Session.return_value = mock_session
+        mock_boto3 = MagicMock()
+        mock_session = MagicMock()
+        mock_session.get_credentials.return_value = MagicMock()
+        mock_boto3.Session.return_value = mock_session
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
             assert creds.is_aws_configured() is True
 
-    def test_aws_boto3_import_error(self, creds):
-        with patch("minisky.credentials.boto3") as mock_boto3:
-            mock_boto3.Session.side_effect = Exception("no boto3")
+    def test_aws_boto3_exception(self, creds):
+        # When boto3.Session() raises, should return False
+        mock_boto3 = MagicMock()
+        mock_boto3.Session.side_effect = Exception("no boto3")
+
+        with patch.dict("sys.modules", {"boto3": mock_boto3}):
             assert creds.is_aws_configured() is False
 
 
@@ -117,14 +136,19 @@ class TestIsGcpConfigured:
 
     def test_gcp_with_project_and_google_auth(self, creds, config):
         config.set("providers.gcp.project", "my-project")
-        with patch("minisky.credentials.google.auth.default") as mock_auth:
-            mock_auth.return_value = (MagicMock(), "project")
+        # google.auth is imported inside the method, mock at sys.modules level
+        mock_google = MagicMock()
+        mock_google.auth.default.return_value = (MagicMock(), "project")
+
+        with patch.dict("sys.modules", {"google": mock_google, "google.auth": mock_google.auth}):
             assert creds.is_gcp_configured() is True
 
     def test_gcp_with_project_but_no_auth(self, creds, config):
         config.set("providers.gcp.project", "my-project")
-        with patch("minisky.credentials.google.auth.default") as mock_auth:
-            mock_auth.side_effect = Exception("no credentials")
+        mock_google = MagicMock()
+        mock_google.auth.default.side_effect = Exception("no credentials")
+
+        with patch.dict("sys.modules", {"google": mock_google, "google.auth": mock_google.auth}):
             assert creds.is_gcp_configured() is False
 
 
@@ -147,17 +171,29 @@ class TestRequireApiKey:
         config.set("providers.runpod.api_key", "my-key")
         assert creds.require_api_key("runpod") == "my-key"
 
-    def test_raises_when_missing(self, creds):
-        with pytest.raises(ValueError, match="No API key found"):
-            creds.require_api_key("runpod")
+    def test_raises_when_missing(self, tmp_path):
+        fresh_config = MiniSkyConfig(config_path=str(tmp_path / "empty4.yaml"))
+        fresh_creds = CredentialManager(config=fresh_config)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNPOD_API_KEY", None)
+            with pytest.raises(ValueError, match="No API key found"):
+                fresh_creds.require_api_key("runpod")
 
-    def test_error_message_includes_provider_name(self, creds):
-        with pytest.raises(ValueError, match="runpod"):
-            creds.require_api_key("runpod")
+    def test_error_message_includes_provider_name(self, tmp_path):
+        fresh_config = MiniSkyConfig(config_path=str(tmp_path / "empty5.yaml"))
+        fresh_creds = CredentialManager(config=fresh_config)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNPOD_API_KEY", None)
+            with pytest.raises(ValueError, match="runpod"):
+                fresh_creds.require_api_key("runpod")
 
-    def test_error_message_includes_env_var_hint(self, creds):
-        with pytest.raises(ValueError, match="RUNPOD_API_KEY"):
-            creds.require_api_key("runpod")
+    def test_error_message_includes_env_var_hint(self, tmp_path):
+        fresh_config = MiniSkyConfig(config_path=str(tmp_path / "empty6.yaml"))
+        fresh_creds = CredentialManager(config=fresh_config)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("RUNPOD_API_KEY", None)
+            with pytest.raises(ValueError, match="RUNPOD_API_KEY"):
+                fresh_creds.require_api_key("runpod")
 
 
 class TestCredentialManagerInit:

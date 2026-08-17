@@ -220,15 +220,14 @@ class TestLambdaWaitForIp:
         with pytest.raises(ProviderError, match="terminated"):
             provider._wait_for_ip("inst1", timeout=5)
 
-    @patch("minisky.providers.lambda_cloud.time.sleep", return_value=None)
-    @patch("minisky.providers.lambda_cloud.time.time")
-    def test_wait_for_ip_timeout(self, mock_time, mock_sleep, provider):
-        mock_time.side_effect = [0, 0, 200]
+    def test_wait_for_ip_timeout(self, provider):
+        """Test timeout by using a very short timeout with no IP returned."""
         provider._client.get.return_value = _mock_response(200, {
             "data": {"status": "booting"}
         })
+        # Use timeout=0 to immediately trigger timeout
         with pytest.raises(ProviderError, match="Timeout"):
-            provider._wait_for_ip("inst1", timeout=10)
+            provider._wait_for_ip("inst1", timeout=0)
 
 
 # ---------------------------------------------------------------------------

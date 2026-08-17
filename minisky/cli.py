@@ -20,7 +20,7 @@ from rich.live import Live
 from rich.spinner import Spinner
 from rich.text import Text
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import time
 
 from .task import Task
@@ -814,6 +814,31 @@ def gpus(
     catalog.display(gpu_filter=gpu_filter, available_only=available_only)
 
 
+@app.command()
+def optimize(
+    task_file: str = typer.Argument(..., help="Path to task YAML file"),
+):
+    """
+    Show cost-optimization candidates for a task across all configured providers.
+
+    Ranks matching GPU options by price (cheapest first) without launching
+    anything - use `minisky launch task.yaml --optimize` to actually launch
+    on the winning provider.
+
+    Example:
+        minisky optimize task.yaml
+    """
+    from .optimizer import CostOptimizer
+
+    try:
+        task = Task.from_yaml(task_file)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    CostOptimizer(config).display_options(task)
+
+
 # --- SSH ---
 
 @app.command()
@@ -1015,6 +1040,36 @@ def rsync(
 
 
 # --- Cost Report ---
+
+def _find_catalog_entry(
+    entries: List[Dict[str, Any]],
+    provider: str,
+    instance_type: Optional[str] = None,
+    gpu_name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Find the catalog entry matching a launched VM's provider + instance/GPU.
+
+    Instance-type match is exact (AWS/Lambda use `instance_type`, GCP's
+    catalog entries also key on `instance_type` even though its vm_info
+    uses `machine_type` - callers pass either). GPU-name match falls back
+    to substring matching since RunPod/Mock VMs never record an instance
+    type, only the requested GPU name.
+    """
+    if instance_type:
+        for e in entries:
+            if e.get('provider') == provider and e.get('instance_type') == instance_type:
+                return e
+    if gpu_name:
+        gpu_upper = gpu_name.upper()
+        for e in entries:
+            if e.get('provider') != provider:
+                continue
+            entry_name = (e.get('gpu_name') or '').upper()
+            if gpu_upper in entry_name or entry_name in gpu_upper:
+                return e
+    return None
+
 
 @app.command(name="cost-report")
 def cost_report():

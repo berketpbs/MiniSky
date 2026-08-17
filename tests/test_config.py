@@ -103,3 +103,30 @@ class TestDeepMerge:
         override = {'a': {'b': 2}}
         _deep_merge(base, override)
         assert base == {'a': {'b': 1}}
+
+    def test_result_does_not_alias_base_nested_dicts(self):
+        """
+        With an empty override, a naive `base.copy()` (shallow) returns
+        nested dicts that are the *same objects* as in base - so mutating
+        the result in place (e.g. via MiniSkyConfig.set) would silently
+        corrupt base too. This must not happen even when override is {}.
+        """
+        base = {'providers': {'runpod': {'api_key': None}}}
+        result = _deep_merge(base, {})
+        result['providers']['runpod']['api_key'] = 'leaked-key'
+        assert base['providers']['runpod']['api_key'] is None
+
+    def test_module_defaults_not_corrupted_by_instance_set(self, tmp_path):
+        """
+        Regression test for a real bug: MiniSkyConfig instances pointed at
+        different (or nonexistent) config files must be fully independent.
+        Previously, calling .set() on a fresh config (empty override, so
+        it merges straight from the module-level _DEFAULTS) mutated
+        _DEFAULTS in place, leaking credentials into every other
+        MiniSkyConfig instance created afterward in the same process.
+        """
+        cfg_a = MiniSkyConfig(config_path=str(tmp_path / "a.yaml"))
+        cfg_a.set('providers.runpod.api_key', 'leaked-key')
+
+        cfg_b = MiniSkyConfig(config_path=str(tmp_path / "b.yaml"))
+        assert cfg_b.get('providers.runpod.api_key') is None

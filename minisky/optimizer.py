@@ -27,6 +27,7 @@ class OptimizerResult:
         region: Optional[str] = None,
         instance_type: Optional[str] = None,
         available: bool = True,
+        price_is_estimate: bool = False,
     ):
         self.provider = provider
         self.gpu_name = gpu_name
@@ -35,6 +36,7 @@ class OptimizerResult:
         self.region = region
         self.instance_type = instance_type
         self.available = available
+        self.price_is_estimate = price_is_estimate
 
     @property
     def effective_price(self) -> float:
@@ -104,6 +106,14 @@ class CostOptimizer:
         if self._creds.is_configured('lambda'):
             candidates.extend(self._query_lambda(gpu_name, gpu_count))
 
+        # Query AWS catalog (static estimated pricing)
+        if self._creds.is_aws_configured():
+            candidates.extend(self._query_aws(gpu_name, gpu_count))
+
+        # Query GCP catalog (static estimated pricing)
+        if self._creds.is_gcp_configured():
+            candidates.extend(self._query_gcp(gpu_name, gpu_count))
+
         # Always include mock (free)
         if gpu_name:
             candidates.append(OptimizerResult(
@@ -146,9 +156,13 @@ class CostOptimizer:
         table.add_column("Region", style="dim")
         table.add_column("Available", justify="center")
 
+        any_estimated = False
         for i, r in enumerate(results, 1):
             avail = "[green]Yes[/green]" if r.available else "[red]No[/red]"
-            price = f"${r.price_per_hour:.2f}/hr" if r.price_per_hour else "-"
+            estimate_suffix = "~" if r.price_is_estimate else ""
+            if r.price_is_estimate:
+                any_estimated = True
+            price = f"${r.price_per_hour:.2f}/hr{estimate_suffix}" if r.price_per_hour else "-"
             spot = f"${r.spot_price:.2f}/hr" if r.spot_price else "-"
             row_style = "bold" if i == 1 else ""
 
@@ -164,6 +178,8 @@ class CostOptimizer:
             )
 
         console.print(table)
+        if any_estimated:
+            console.print("[dim]~ = static price estimate, not a live quote[/dim]")
 
         best = results[0]
         if best.available:
@@ -236,6 +252,64 @@ class CostOptimizer:
                 region=region,
                 instance_type=entry.get('instance_type'),
                 available=entry.get('available', False),
+            ))
+
+        return results
+
+    def _query_aws(self, gpu_name: Optional[str], gpu_count: int) -> List[OptimizerResult]:
+        """Query AWS's static GPU instance catalog and filter by requirements."""
+        try:
+            from .providers.aws import AWSProvider
+            provider = AWSProvider()
+            catalog = provider.get_gpu_catalog()
+        except Exception:
+            return []
+
+        return self._filter_static_catalog('aws', catalog, gpu_name, gpu_count)
+
+    def _query_gcp(self, gpu_name: Optional[str], gpu_count: int) -> List[OptimizerResult]:
+        """Query GCP's static GPU machine-config catalog and filter by requirements."""
+        try:
+            from .providers.gcp import GCPProvider
+            provider = GCPProvider()
+            catalog = provider.get_gpu_catalog()
+        except Exception:
+            return []
+
+        return self._filter_static_catalog('gcp', catalog, gpu_name, gpu_count)
+
+    @staticmethod
+    def _filter_static_catalog(
+        provider_name: str,
+        catalog: List[Dict[str, Any]],
+        gpu_name: Optional[str],
+        gpu_count: int,
+    ) -> List[OptimizerResult]:
+        """
+        Shared filter/convert logic for AWS/GCP, whose catalogs are static
+        (gpu_name, gpu_count) -> instance_type lookup tables rather than a
+        live API, unlike RunPod/Lambda.
+        """
+        results = []
+        gpu_upper = (gpu_name or '').upper()
+
+        for entry in catalog:
+            entry_name = entry.get('gpu_name', '').upper()
+            entry_count = entry.get('gpu_count', 0)
+
+            if gpu_upper and gpu_upper not in entry_name:
+                continue
+            if entry_count < gpu_count:
+                continue
+
+            results.append(OptimizerResult(
+                provider=provider_name,
+                gpu_name=entry.get('gpu_name', 'unknown'),
+                price_per_hour=entry.get('price_per_hour') or 0,
+                spot_price=None,
+                instance_type=entry.get('instance_type'),
+                available=entry.get('available', False),
+                price_is_estimate=entry.get('price_is_estimate', False),
             ))
 
         return results

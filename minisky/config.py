@@ -5,6 +5,7 @@ Handles reading/writing user configuration from ~/.minisky/config.yaml.
 Stores provider API keys, default settings, and user preferences.
 """
 
+import copy
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -181,7 +182,7 @@ class MiniSkyConfig:
 
     def reset(self):
         """Reset configuration to defaults and persist."""
-        self._data = _DEFAULTS.copy()
+        self._data = copy.deepcopy(_DEFAULTS)
         self._save()
 
 
@@ -196,8 +197,17 @@ def _deep_merge(base: Dict, override: Dict) -> Dict:
 
     Returns:
         Merged dictionary
+
+    Note:
+        Always deep-copies `base` before merging, even when `override` is
+        empty. A shallow `base.copy()` would leave nested dicts (e.g.
+        `result['providers']`) aliased to the same objects as `_DEFAULTS`,
+        so a later `config.set(...)` on the returned data would mutate the
+        shared module-level `_DEFAULTS` dict in place - corrupting every
+        other MiniSkyConfig instance in the process, including ones backed
+        by unrelated config files.
     """
-    result = base.copy()
+    result = copy.deepcopy(base)
     for key, value in override.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)

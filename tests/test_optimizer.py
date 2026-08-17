@@ -163,12 +163,88 @@ class TestQueryProviders:
     def test_query_runpod_error_returns_empty(self, tmp_path):
         optimizer = _optimizer(tmp_path)
         # _query_runpod catches all exceptions and returns []
-        with patch("minisky.optimizer.RunPodProvider", side_effect=Exception("boom")):
+        with patch("minisky.providers.runpod.RunPodProvider", side_effect=Exception("boom")):
             result = optimizer._query_runpod("A100", 1)
             assert result == []
 
     def test_query_lambda_error_returns_empty(self, tmp_path):
         optimizer = _optimizer(tmp_path)
-        with patch("minisky.optimizer.LambdaProvider", side_effect=Exception("boom")):
+        with patch("minisky.providers.lambda_cloud.LambdaProvider", side_effect=Exception("boom")):
             result = optimizer._query_lambda("A100", 1)
             assert result == []
+
+    def test_query_aws_error_returns_empty(self, tmp_path):
+        optimizer = _optimizer(tmp_path)
+        with patch("minisky.providers.aws.AWSProvider", side_effect=Exception("boom")):
+            result = optimizer._query_aws("A100", 1)
+            assert result == []
+
+    def test_query_gcp_error_returns_empty(self, tmp_path):
+        optimizer = _optimizer(tmp_path)
+        with patch("minisky.providers.gcp.GCPProvider", side_effect=Exception("boom")):
+            result = optimizer._query_gcp("A100", 1)
+            assert result == []
+
+    def test_query_aws_filters_by_gpu_and_marks_estimate(self, tmp_path):
+        optimizer = _optimizer(tmp_path)
+        fake_catalog = [
+            {"provider": "aws", "gpu_name": "V100", "gpu_count": 1, "instance_type": "p3.2xlarge",
+             "price_per_hour": 3.06, "price_is_estimate": True, "available": True},
+            {"provider": "aws", "gpu_name": "A100", "gpu_count": 8, "instance_type": "p4d.24xlarge",
+             "price_per_hour": 32.77, "price_is_estimate": True, "available": True},
+        ]
+        mock_provider = MagicMock()
+        mock_provider.get_gpu_catalog.return_value = fake_catalog
+        with patch("minisky.providers.aws.AWSProvider", return_value=mock_provider):
+            results = optimizer._query_aws("V100", 1)
+
+        assert len(results) == 1
+        assert results[0].provider == "aws"
+        assert results[0].instance_type == "p3.2xlarge"
+        assert results[0].price_is_estimate is True
+
+    def test_query_gcp_filters_by_gpu_count(self, tmp_path):
+        optimizer = _optimizer(tmp_path)
+        fake_catalog = [
+            {"provider": "gcp", "gpu_name": "A100", "gpu_count": 1, "instance_type": "a2-highgpu-1g",
+             "price_per_hour": 3.5, "price_is_estimate": True, "available": True},
+        ]
+        mock_provider = MagicMock()
+        mock_provider.get_gpu_catalog.return_value = fake_catalog
+        with patch("minisky.providers.gcp.GCPProvider", return_value=mock_provider):
+            # Requesting more GPUs than any catalog entry provides
+            results = optimizer._query_gcp("A100", 4)
+
+        assert results == []
+
+    def test_find_all_includes_aws_and_gcp_when_configured(self, tmp_path):
+        optimizer = _optimizer(tmp_path)
+        optimizer._creds.is_configured = lambda name: False
+        optimizer._creds.is_aws_configured = lambda: True
+        optimizer._creds.is_gcp_configured = lambda: True
+        optimizer._query_aws = lambda gpu_name, gpu_count: [
+            OptimizerResult(provider="aws", gpu_name="A100", price_per_hour=4.0, available=True, price_is_estimate=True),
+        ]
+        optimizer._query_gcp = lambda gpu_name, gpu_count: [
+            OptimizerResult(provider="gcp", gpu_name="A100", price_per_hour=3.5, available=True, price_is_estimate=True),
+        ]
+
+        task = Task(name="t", run=["echo"], resources=ResourceRequirements(gpu="A100"))
+        results = optimizer.find_all(task)
+        providers = {r.provider for r in results}
+
+        assert "aws" in providers
+        assert "gcp" in providers
+
+    def test_find_all_skips_aws_and_gcp_when_not_configured(self, tmp_path):
+        optimizer = _optimizer(tmp_path)
+        optimizer._creds.is_configured = lambda name: False
+        optimizer._creds.is_aws_configured = lambda: False
+        optimizer._creds.is_gcp_configured = lambda: False
+        optimizer._query_aws = lambda gpu_name, gpu_count: (_ for _ in ()).throw(
+            AssertionError("should not be called when AWS isn't configured")
+        )
+
+        task = Task(name="t", run=["echo"], resources=ResourceRequirements(gpu="A100"))
+        results = optimizer.find_all(task)
+        assert all(r.provider != "aws" for r in results)

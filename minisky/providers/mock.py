@@ -95,7 +95,6 @@ class MockProvider(BaseProvider):
             'provider': 'mock',
             'task_name': task.name,
             'resources': task.resources.model_dump(),
-            'created_at': time.time()
         }
         
         self._instances[vm_id] = vm_info
