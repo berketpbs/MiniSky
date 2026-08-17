@@ -79,6 +79,36 @@ def _spawn_autostop_watcher(vm_id: str, timeout_minutes: int) -> Path:
     return log_path
 
 
+def _spawn_managed_job_runner(job_id: str) -> Path:
+    """
+    Launch a detached background OS process that drives a managed job
+    (launch -> execute -> monitor for spot preemption -> auto-recover)
+    to completion. Same rationale as _spawn_autostop_watcher: an
+    in-process thread dies with this CLI command, so recovery has to
+    live in its own long-running process instead.
+
+    Returns the path to the runner's log file.
+    """
+    import subprocess
+
+    log_path = config.log_dir / f"managed-job-{job_id}.log"
+    cmd = [sys.executable, "-m", "minisky.managed_job_runner", job_id]
+
+    popen_kwargs = {"stdin": subprocess.DEVNULL}
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    log_file = open(log_path, "a")
+    try:
+        subprocess.Popen(cmd, stdout=log_file, stderr=log_file, **popen_kwargs)
+    finally:
+        log_file.close()
+
+    return log_path
+
+
 # --- Launch ---
 
 def _display_provision_status(state: ProvisionState, elapsed: float) -> Text:
@@ -1532,6 +1562,175 @@ def queue_clear(
     
     count = job_queue.clear_vm_jobs(vm_id, status)
     console.print(f"[green]>[/green] Cleared {count} jobs")
+
+
+# --- Managed jobs (spot recovery) ---
+
+jobs_app = typer.Typer(help="Managed jobs with automatic spot-preemption recovery")
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.command("launch")
+def jobs_launch(
+    task_file: str = typer.Argument(..., help="Path to task YAML file"),
+    max_retries: int = typer.Option(3, "--max-retries", help="Max relaunch attempts after preemption"),
+    checkpoint: Optional[str] = typer.Option(None, "--checkpoint", help="Remote checkpoint URI (s3://... or gs://...)"),
+    no_spot: bool = typer.Option(False, "--no-spot", help="Use on-demand instead of spot instances"),
+):
+    """
+    Submit a managed job: launches on a VM and automatically relaunches
+    it if the (spot) instance is preempted, unlike `minisky launch` which
+    has no recovery if the VM disappears mid-run.
+
+    Example:
+        minisky jobs launch task.yaml
+        minisky jobs launch task.yaml --checkpoint s3://bucket/run1 --max-retries 5
+    """
+    from .managed_jobs import ManagedJobController
+
+    try:
+        task = Task.from_yaml(task_file)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    try:
+        provider = get_provider(task.provider)
+    except Exception as e:
+        console.print(f"[red]Error:[/red] {str(e)}")
+        raise typer.Exit(1)
+
+    # execute_job() runs a single command over one SSH session; chain the
+    # task's run commands with && so a managed job's semantics match a
+    # normal `minisky launch` stopping at the first failing command.
+    command = " && ".join(task.run)
+
+    controller = ManagedJobController(state_manager=state, provider=provider)
+    job = controller.submit(
+        task,
+        command=command,
+        checkpoint_uri=checkpoint,
+        max_retries=max_retries,
+        use_spot=not no_spot,
+    )
+
+    log_path = _spawn_managed_job_runner(job.job_id)
+    console.print(f"\n[dim]Runner log: {log_path}[/dim]")
+    console.print(f"Use 'minisky jobs status {job.job_id}' to check progress")
+
+
+@jobs_app.command("list")
+def jobs_list():
+    """
+    List managed jobs.
+
+    Example:
+        minisky jobs list
+    """
+    from .managed_jobs import ManagedJobController
+
+    controller = ManagedJobController(state_manager=state, provider=None)
+    controller.load_persisted()
+    jobs = sorted(controller.list_jobs(), key=lambda j: j.created_at, reverse=True)
+
+    if not jobs:
+        console.print("[yellow]No managed jobs found[/yellow]")
+        return
+
+    table = Table(title="Managed Jobs")
+    table.add_column("Job ID", style="cyan")
+    table.add_column("Task", style="blue")
+    table.add_column("Status", style="yellow")
+    table.add_column("VM ID", style="white")
+    table.add_column("Attempts", style="dim", justify="right")
+
+    status_colors = {
+        "running": "green",
+        "failed": "red",
+        "completed": "blue",
+        "recovering": "yellow",
+        "cancelled": "dim",
+    }
+
+    for job in jobs:
+        color = status_colors.get(job.status.value)
+        status_str = f"[{color}]{job.status.value}[/{color}]" if color else job.status.value
+        table.add_row(
+            job.job_id,
+            job.task_name,
+            status_str,
+            job.vm_id or "-",
+            str(job.attempts),
+        )
+
+    console.print(table)
+
+
+@jobs_app.command("status")
+def jobs_status(
+    job_id: str = typer.Argument(..., help="Managed job ID"),
+):
+    """
+    Show details of a managed job.
+
+    Example:
+        minisky jobs status managed-abc12345
+    """
+    from .managed_jobs import ManagedJobController
+
+    controller = ManagedJobController(state_manager=state, provider=None)
+    controller.load_persisted()
+    job = controller.get_job(job_id)
+
+    if not job:
+        console.print(f"[red]Managed job not found:[/red] {job_id}")
+        raise typer.Exit(1)
+
+    console.print(Panel(f"[bold]Managed Job: {job.job_id}[/bold]", border_style="cyan"))
+    console.print(f"  Task: {job.task_name}")
+    console.print(f"  Command: {job.command}")
+    console.print(f"  Status: {job.status.value}")
+    console.print(f"  VM ID: {job.vm_id or '-'}")
+    console.print(f"  Attempts: {job.attempts}")
+    if job.runtime_seconds is not None:
+        console.print(f"  Runtime: {job.runtime_seconds:.1f}s")
+    if job.last_checkpoint:
+        console.print(f"  Last checkpoint: {job.last_checkpoint}")
+    if job.error_message:
+        console.print(f"  [red]Error:[/red] {job.error_message}")
+
+
+@jobs_app.command("cancel")
+def jobs_cancel(
+    job_id: str = typer.Argument(..., help="Managed job ID to cancel"),
+):
+    """
+    Cancel a managed job and terminate its VM.
+
+    Example:
+        minisky jobs cancel managed-abc12345
+    """
+    from .managed_jobs import ManagedJobController, ManagedJob
+
+    data = state.get_managed_job_data(job_id)
+    if not data:
+        console.print(f"[red]Managed job not found:[/red] {job_id}")
+        raise typer.Exit(1)
+
+    job = ManagedJob.from_dict(data)
+
+    provider_name = job.task.provider if job.task else None
+    if not provider_name and job.vm_id:
+        vm_info = state.get_vm(job.vm_id)
+        provider_name = vm_info.get('provider') if vm_info else None
+
+    provider = get_provider(provider_name or 'mock')
+    controller = ManagedJobController(state_manager=state, provider=provider)
+    with controller._lock:
+        controller._jobs[job_id] = job
+
+    if not controller.cancel(job_id):
+        console.print(f"[yellow]Cannot cancel job (already terminal or not found):[/yellow] {job_id}")
 
 
 if __name__ == "__main__":

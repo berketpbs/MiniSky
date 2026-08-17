@@ -103,6 +103,7 @@ minisky cost-report                # Cost report across all tracked VMs
 minisky config show|set|get|unset  # Manage ~/.minisky/config.yaml
 minisky cluster launch|status|terminate   # Multi-node cluster management
 minisky queue list|add|show|cancel|clear  # Job queue management
+minisky jobs launch|list|status|cancel    # Managed jobs: auto-relaunch on spot preemption
 ```
 
 Run `minisky <command> --help` for full options on any command.

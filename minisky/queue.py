@@ -240,7 +240,11 @@ class JobQueue:
                 query += ' AND status = ?'
                 params.append(status.value)
             
-            query += ' ORDER BY created_at DESC LIMIT ?'
+            # created_at (time.time()) has coarse resolution on some
+            # platforms (~15ms on Windows) - jobs added in quick
+            # succession can tie on it, so break ties by insertion order
+            # (rowid) to keep "most recent first" actually correct.
+            query += ' ORDER BY created_at DESC, rowid DESC LIMIT ?'
             params.append(limit)
             
             cursor = conn.execute(query, params)

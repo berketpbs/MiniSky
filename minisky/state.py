@@ -72,6 +72,19 @@ class StateManager:
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # Used by ManagedJobController (minisky/managed_jobs.py) so
+            # managed job state (status, vm_id, attempts, task definition)
+            # survives across separate CLI invocations and the detached
+            # managed_job_runner process. Distinct from the `jobs` table
+            # above, which is the API server's JobController's own record
+            # type with a different id namespace and schema.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS managed_jobs (
+                    job_id TEXT PRIMARY KEY,
+                    data TEXT NOT NULL,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             conn.commit()
     
     @contextmanager
@@ -306,5 +319,42 @@ class StateManager:
         """Remove a persisted job record."""
         with self._get_connection() as conn:
             cursor = conn.execute('DELETE FROM jobs WHERE job_id = ?', (job_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    # -------------------------------------------------------------------
+    # Managed jobs persistence (spot recovery)
+    # -------------------------------------------------------------------
+
+    def save_managed_job(self, job_id: str, data: Dict[str, Any]) -> None:
+        """Upsert a managed job record (ManagedJob, serialized as a dict)."""
+        with self._get_connection() as conn:
+            conn.execute('''
+                INSERT INTO managed_jobs (job_id, data, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(job_id) DO UPDATE SET
+                    data = excluded.data,
+                    updated_at = CURRENT_TIMESTAMP
+            ''', (job_id, json.dumps(data)))
+            conn.commit()
+
+    def get_managed_job_data(self, job_id: str) -> Optional[Dict[str, Any]]:
+        """Get a persisted managed job record by ID."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                'SELECT data FROM managed_jobs WHERE job_id = ?', (job_id,)
+            ).fetchone()
+            return json.loads(row['data']) if row else None
+
+    def list_managed_job_data(self) -> List[Dict[str, Any]]:
+        """List all persisted managed job records."""
+        with self._get_connection() as conn:
+            rows = conn.execute('SELECT data FROM managed_jobs').fetchall()
+            return [json.loads(row['data']) for row in rows]
+
+    def delete_managed_job(self, job_id: str) -> bool:
+        """Remove a persisted managed job record."""
+        with self._get_connection() as conn:
+            cursor = conn.execute('DELETE FROM managed_jobs WHERE job_id = ?', (job_id,))
             conn.commit()
             return cursor.rowcount > 0

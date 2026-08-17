@@ -47,6 +47,14 @@ def mock_autostop_watcher():
         yield mock_spawn
 
 
+@pytest.fixture(autouse=True)
+def mock_managed_job_runner():
+    """Prevent `jobs launch` from spawning a real detached OS process."""
+    with patch("minisky.cli._spawn_managed_job_runner") as mock_spawn:
+        mock_spawn.return_value = Path("/tmp/fake-managed-job.log")
+        yield mock_spawn
+
+
 @pytest.fixture
 def mock_config(tmp_path):
     """Replace global config with a temp one."""
@@ -568,3 +576,106 @@ class TestCostReportCommand:
         assert result.exit_code == 0
         assert "$3.060~" in result.output
         assert "static price estimate" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Managed jobs (spot recovery) command tests
+# ---------------------------------------------------------------------------
+
+class TestJobsLaunchCommand:
+    """Test 'minisky jobs launch' command."""
+
+    def test_launch_submits_job_and_spawns_runner(self, tmp_path, mock_managed_job_runner):
+        task_file = tmp_path / "task.yaml"
+        task_file.write_text("name: t\nresources:\n  gpu: A100\nrun:\n  - echo hi\n")
+
+        result = runner.invoke(app, ["jobs", "launch", str(task_file)])
+
+        assert result.exit_code == 0
+        assert "Managed job submitted" in result.output
+        mock_managed_job_runner.assert_called_once()
+        job_id = mock_managed_job_runner.call_args.args[0]
+        assert job_id.startswith("managed-")
+
+    def test_launch_missing_file(self, tmp_path):
+        result = runner.invoke(app, ["jobs", "launch", str(tmp_path / "nope.yaml")])
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+    def test_launch_no_run_commands(self, tmp_path):
+        """Task itself enforces run has >=1 command; launch should surface that cleanly."""
+        task_file = tmp_path / "task.yaml"
+        task_file.write_text("name: t\nrun: []\n")
+
+        result = runner.invoke(app, ["jobs", "launch", str(task_file)])
+
+        assert result.exit_code == 1
+        assert "Error" in result.output
+
+
+class TestJobsListStatusCommands:
+    """Test 'minisky jobs list' and 'minisky jobs status'."""
+
+    def test_list_no_jobs(self, mock_state):
+        result = runner.invoke(app, ["jobs", "list"])
+        assert result.exit_code == 0
+        assert "No managed jobs found" in result.output
+
+    def test_list_shows_submitted_job(self, tmp_path, mock_state):
+        task_file = tmp_path / "task.yaml"
+        task_file.write_text("name: t\nresources:\n  gpu: A100\nrun:\n  - echo hi\n")
+        runner.invoke(app, ["jobs", "launch", str(task_file)])
+
+        result = runner.invoke(app, ["jobs", "list"])
+
+        assert result.exit_code == 0
+        assert "managed-" in result.output
+        assert "pending" in result.output
+
+    def test_status_not_found(self, mock_state):
+        result = runner.invoke(app, ["jobs", "status", "managed-nonexistent"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_status_shows_details(self, tmp_path, mock_state):
+        task_file = tmp_path / "task.yaml"
+        task_file.write_text("name: t\nresources:\n  gpu: A100\nrun:\n  - echo hi\n")
+        launch_result = runner.invoke(app, ["jobs", "launch", str(task_file)])
+        job_id = None
+        for line in launch_result.output.splitlines():
+            if "Managed job submitted:" in line:
+                job_id = line.split(":", 1)[1].strip()
+        assert job_id is not None
+
+        result = runner.invoke(app, ["jobs", "status", job_id])
+
+        assert result.exit_code == 0
+        assert job_id in result.output
+        assert "pending" in result.output
+
+
+class TestJobsCancelCommand:
+    """Test 'minisky jobs cancel' command."""
+
+    def test_cancel_not_found(self, mock_state):
+        result = runner.invoke(app, ["jobs", "cancel", "managed-nonexistent"])
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_cancel_pending_job(self, tmp_path, mock_state):
+        task_file = tmp_path / "task.yaml"
+        task_file.write_text("name: t\nresources:\n  gpu: A100\nrun:\n  - echo hi\n")
+        launch_result = runner.invoke(app, ["jobs", "launch", str(task_file)])
+        job_id = None
+        for line in launch_result.output.splitlines():
+            if "Managed job submitted:" in line:
+                job_id = line.split(":", 1)[1].strip()
+        assert job_id is not None
+
+        result = runner.invoke(app, ["jobs", "cancel", job_id])
+
+        assert result.exit_code == 0
+        assert "cancelled" in result.output.lower()
+
+        status_result = runner.invoke(app, ["jobs", "status", job_id])
+        assert "cancelled" in status_result.output.lower()

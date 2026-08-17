@@ -8,7 +8,7 @@ checkpoint management, and fault-tolerant job execution.
 import time
 import threading
 from typing import Dict, List, Optional, Any, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from enum import Enum
 from pathlib import Path
 from rich.console import Console
@@ -93,6 +93,55 @@ class ManagedJob:
             return end - self.started_at
         return None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        Serialize for persistence (StateManager.save_managed_job).
+
+        `task` is a Task (pydantic BaseModel), not a plain dataclass, so
+        it needs its own model_dump() rather than dataclasses.asdict().
+        """
+        return {
+            "job_id": self.job_id,
+            "task_name": self.task_name,
+            "command": self.command,
+            "status": self.status.value,
+            "vm_id": self.vm_id,
+            "task": self.task.model_dump() if self.task is not None else None,
+            "checkpoint_config": asdict(self.checkpoint_config),
+            "recovery_config": asdict(self.recovery_config),
+            "attempts": self.attempts,
+            "last_checkpoint": self.last_checkpoint,
+            "last_checkpoint_time": self.last_checkpoint_time,
+            "created_at": self.created_at,
+            "started_at": self.started_at,
+            "completed_at": self.completed_at,
+            "error_message": self.error_message,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ManagedJob":
+        """Deserialize a job persisted via to_dict()."""
+        from .task import Task
+
+        task = Task(**data["task"]) if data.get("task") is not None else None
+        return cls(
+            job_id=data["job_id"],
+            task_name=data["task_name"],
+            command=data["command"],
+            status=ManagedJobStatus(data["status"]),
+            vm_id=data.get("vm_id"),
+            task=task,
+            checkpoint_config=CheckpointConfig(**data.get("checkpoint_config", {})),
+            recovery_config=RecoveryConfig(**data.get("recovery_config", {})),
+            attempts=data.get("attempts", 0),
+            last_checkpoint=data.get("last_checkpoint"),
+            last_checkpoint_time=data.get("last_checkpoint_time"),
+            created_at=data.get("created_at", time.time()),
+            started_at=data.get("started_at"),
+            completed_at=data.get("completed_at"),
+            error_message=data.get("error_message"),
+        )
+
 
 class ManagedJobController:
     """
@@ -130,6 +179,38 @@ class ManagedJobController:
         self._monitor_thread: Optional[threading.Thread] = None
         self._running = False
         self._lock = threading.Lock()
+
+    def _persist(self, job: ManagedJob) -> None:
+        """
+        Best-effort persist of a job's current state via StateManager, so
+        `minisky jobs list/status` (run from a separate CLI invocation)
+        and the detached managed_job_runner process can see up-to-date
+        status. Non-fatal on failure - self._jobs remains the source of
+        truth for the lifetime of this controller instance.
+        """
+        try:
+            self.state.save_managed_job(job.job_id, job.to_dict())
+        except Exception:
+            pass
+
+    def load_persisted(self) -> None:
+        """
+        Hydrate self._jobs from StateManager's persisted managed_jobs
+        table. Not called automatically from __init__ - a controller
+        used only to submit a brand-new job (e.g. from `minisky jobs
+        launch`) has no need to pull in every other job in the table,
+        and unit tests construct controllers with mocked state managers
+        that don't implement list_managed_job_data(). Call this
+        explicitly wherever a process needs to see jobs created by
+        other processes (`minisky jobs list/status/cancel`, the runner).
+        """
+        for data in self.state.list_managed_job_data():
+            try:
+                job = ManagedJob.from_dict(data)
+            except Exception:
+                continue
+            with self._lock:
+                self._jobs[job.job_id] = job
     
     def submit(
         self,
@@ -177,14 +258,15 @@ class ManagedJobController:
         
         with self._lock:
             self._jobs[job_id] = job
-        
+        self._persist(job)
+
         console.print(f"[green]✓[/green] Managed job submitted: {job_id}")
         console.print(f"  Command: {command}")
         console.print(f"  Max retries: {max_retries}")
         console.print(f"  Spot: {'enabled' if use_spot else 'disabled'}")
         if checkpoint_uri:
             console.print(f"  Checkpoint: {checkpoint_uri}")
-        
+
         return job
     
     def get_job(self, job_id: str) -> Optional[ManagedJob]:
@@ -209,6 +291,7 @@ class ManagedJobController:
         with self._lock:
             job.status = ManagedJobStatus.LAUNCHING
             job.attempts += 1
+        self._persist(job)
 
         console.print(f"\n[cyan]Launching managed job (attempt {job.attempts})...[/cyan]")
 
@@ -230,6 +313,25 @@ class ManagedJobController:
 
             console.print(f"[green]✓[/green] VM launched: {vm_info['vm_id']}")
 
+            if self._was_cancelled_externally(job):
+                # `minisky jobs cancel` (a separate process) landed while
+                # provider.launch() was in flight - a real window for
+                # real clouds, where launch can take tens of seconds.
+                # Terminate the VM we just launched instead of declaring
+                # RUNNING and persisting over the cancellation.
+                console.print(f"[yellow]Job {job.job_id} was cancelled during launch, terminating VM[/yellow]")
+                try:
+                    self.provider.terminate(vm_info['vm_id'])
+                    self.state.remove_vm(vm_info['vm_id'])
+                except Exception:
+                    pass
+                with self._lock:
+                    job.vm_id = None
+                    job.status = ManagedJobStatus.CANCELLED
+                    job.completed_at = time.time()
+                self._persist(job)
+                return False
+
             # Restore checkpoint if available
             if job.checkpoint_config.enabled and job.last_checkpoint and self.storage:
                 console.print("[cyan]Restoring checkpoint...[/cyan]")
@@ -246,6 +348,7 @@ class ManagedJobController:
 
             with self._lock:
                 job.status = ManagedJobStatus.RUNNING
+            self._persist(job)
             return True
 
         except Exception as e:
@@ -253,6 +356,7 @@ class ManagedJobController:
             with self._lock:
                 job.error_message = str(e)
                 job.status = ManagedJobStatus.FAILED
+            self._persist(job)
             return False
     
     def execute_job(self, job: ManagedJob) -> int:
@@ -315,17 +419,18 @@ class ManagedJobController:
             job.last_checkpoint = checkpoint_uri
             job.last_checkpoint_time = time.time()
             console.print(f"[green]✓[/green] Checkpoint saved: {checkpoint_uri}")
-        
+            self._persist(job)
+
         return success
-    
+
     def handle_preemption(self, job: ManagedJob, task: Any) -> bool:
         """
         Handle spot instance preemption.
-        
+
         Args:
             job: Preempted job
             task: Task definition for re-launch
-            
+
         Returns:
             True if recovery initiated
         """
@@ -342,12 +447,14 @@ class ManagedJobController:
                 pass
             with self._lock:
                 job.vm_id = None
+        self._persist(job)
 
         if not job.can_retry:
             console.print("[red]Max retries exceeded, job failed[/red]")
             with self._lock:
                 job.status = ManagedJobStatus.FAILED
                 job.completed_at = time.time()
+            self._persist(job)
             return False
         
         # Wait before retry
@@ -432,7 +539,8 @@ class ManagedJobController:
                             job.status = ManagedJobStatus.FAILED
                             job.error_message = f"VM {status}; no task reference available for recovery"
                             job.completed_at = time.time()
-            
+                        self._persist(job)
+
             time.sleep(check_interval)
     
     def wait(self, job_id: str, timeout: Optional[int] = None) -> ManagedJobStatus:
@@ -494,6 +602,7 @@ class ManagedJobController:
         with self._lock:
             job.status = ManagedJobStatus.CANCELLED
             job.completed_at = time.time()
+        self._persist(job)
 
         console.print(f"[green]✓[/green] Managed job cancelled: {job_id}")
         return True
@@ -516,7 +625,7 @@ class ManagedJobController:
         with self._lock:
             job.status = ManagedJobStatus.COMPLETED if success else ManagedJobStatus.FAILED
             job.completed_at = time.time()
-        
+
         # Terminate VM
         if job.vm_id:
             try:
@@ -524,12 +633,106 @@ class ManagedJobController:
                 self.state.remove_vm(job.vm_id)
             except Exception:
                 pass
-        
+        self._persist(job)
+
         status_str = "completed" if success else "failed"
         console.print(f"[green]✓[/green] Managed job {status_str}: {job_id}")
-        
+
         if job.runtime_seconds:
             console.print(f"  Runtime: {job.runtime_seconds:.1f}s")
         console.print(f"  Attempts: {job.attempts}")
-        
+
         return True
+
+    def run_to_completion(
+        self,
+        job: ManagedJob,
+        task: Any,
+        check_interval: int = 30,
+    ) -> ManagedJobStatus:
+        """
+        Drive a single job through launch -> execute -> (recover on
+        preemption)* -> complete, blocking until it reaches a terminal
+        state or is cancelled externally.
+
+        This is the whole point of a "managed" job: minisky_job_runner.py
+        spawns as a detached process and calls this method, so the
+        launch->execute->monitor->recover loop keeps running after the
+        CLI command that submitted the job has long since returned -
+        unlike the old start_monitoring()/threading.Thread approach,
+        which only watched for preemption for as long as *something else*
+        kept the owning process alive.
+
+        The command itself runs in a background thread so this method
+        can concurrently poll VM status (to notice preemption while the
+        command is mid-run) and poll persisted job state (to notice
+        external cancellation via `minisky jobs cancel`).
+        """
+        if job.status in (ManagedJobStatus.PENDING, ManagedJobStatus.LAUNCHING) and not job.vm_id:
+            if not self.launch_job(job, task):
+                return job.status  # already persisted as FAILED
+            if self._was_cancelled_externally(job):
+                # A `minisky jobs cancel` landed while we were launching.
+                # Its write raced with (and would otherwise be clobbered
+                # by) launch_job()'s own _persist() call above, silently
+                # losing the cancellation and leaving an orphaned VM
+                # running. Honor it now that we're back in control.
+                self.cancel(job.job_id)
+                return job.status
+
+        while True:
+            exec_result: Dict[str, int] = {}
+
+            def _run():
+                exec_result['exit_code'] = self.execute_job(job)
+
+            exec_thread = threading.Thread(target=_run, daemon=True)
+            exec_thread.start()
+
+            while exec_thread.is_alive():
+                exec_thread.join(timeout=check_interval)
+                if exec_thread.is_alive() and self._was_cancelled_externally(job):
+                    self.cancel(job.job_id)
+                    return job.status
+
+            exit_code = exec_result.get('exit_code', -1)
+
+            if exit_code == -1:
+                # execute_job() hit an exception - could be a deliberate
+                # `minisky jobs cancel` (which terminates the VM directly,
+                # synchronously, for immediate user feedback - it doesn't
+                # wait for us to notice on our next poll), a real error
+                # (bad command, unreachable host), or the VM disappearing
+                # on its own. Check for the cancel race first: if the VM
+                # died because we were cancelled, that's not a preemption
+                # to recover from.
+                if self._was_cancelled_externally(job):
+                    self.cancel(job.job_id)
+                    return job.status
+
+                vm_status = self.check_vm_status(job)
+                if vm_status in ("not_found", "terminated", "preempted"):
+                    if self.handle_preemption(job, task):
+                        if self._was_cancelled_externally(job):
+                            # Cancelled while we were mid-relaunch - same
+                            # race as the initial launch, same fix.
+                            self.cancel(job.job_id)
+                            return job.status
+                        continue  # relaunched on a new VM - run the command again
+                    return job.status  # retries exhausted, already persisted FAILED
+
+            self.complete(job.job_id, success=(exit_code == 0))
+            return job.status
+
+    def _was_cancelled_externally(self, job: ManagedJob) -> bool:
+        """
+        True if job_id's persisted status is CANCELLED but this
+        controller's in-memory `job` object doesn't know it yet - i.e. a
+        `minisky jobs cancel` (a separate process) wrote it directly to
+        StateManager while we were busy launching/executing/recovering.
+        """
+        try:
+            latest = self.state.get_managed_job_data(job.job_id)
+        except Exception:
+            return False
+        return bool(latest) and latest.get('status') == ManagedJobStatus.CANCELLED.value
