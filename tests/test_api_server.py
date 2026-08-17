@@ -211,6 +211,45 @@ class TestClusterControllerRealProviderWiring:
         assert cluster.vm_id in provider._instances
 
     @pytest.mark.asyncio
+    async def test_launch_with_autostop_spawns_watcher(self, tmp_path):
+        """
+        Regression test: a cluster launched via the dashboard/API with
+        autostop_minutes set used to persist that field but never
+        actually enforce it - unlike `minisky launch`, which spawns a
+        detached watcher process. Verify _do_launch spawns the same
+        watcher when autostop_minutes is set.
+        """
+        bus = EventBus()
+        controller = ClusterController(bus)
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
+
+        with patch.object(core_module, "get_provider", return_value=provider), \
+             patch.object(core_module, "spawn_autostop_watcher") as mock_spawn:
+            cluster = await controller.create_cluster(
+                name="c-autostop", provider="mock", accelerators={"A100": 1}, autostop_minutes=15
+            )
+            await controller.launch_cluster(cluster.cluster_id)
+            await _wait_until(lambda: cluster.state != ClusterState.LAUNCHING)
+
+        assert cluster.state == ClusterState.UP
+        mock_spawn.assert_called_once_with(cluster.vm_id, 15, controller.config)
+
+    @pytest.mark.asyncio
+    async def test_launch_without_autostop_does_not_spawn_watcher(self, tmp_path):
+        bus = EventBus()
+        controller = ClusterController(bus)
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
+
+        with patch.object(core_module, "get_provider", return_value=provider), \
+             patch.object(core_module, "spawn_autostop_watcher") as mock_spawn:
+            cluster = await controller.create_cluster(name="c-no-autostop", provider="mock", accelerators={"A100": 1})
+            await controller.launch_cluster(cluster.cluster_id)
+            await _wait_until(lambda: cluster.state != ClusterState.LAUNCHING)
+
+        assert cluster.state == ClusterState.UP
+        mock_spawn.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_launch_failure_from_provider_transitions_to_error(self):
         bus = EventBus()
         controller = ClusterController(bus)

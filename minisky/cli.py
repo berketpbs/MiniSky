@@ -45,38 +45,15 @@ log_manager = LogManager(config)
 def _spawn_autostop_watcher(vm_id: str, timeout_minutes: int) -> Path:
     """
     Launch a detached background OS process that actually enforces
-    autostop for vm_id.
+    autostop for vm_id. See autostop_spawner.py for why this has to be
+    a separate OS process rather than an in-process thread.
 
-    An in-process threading.Thread (even daemon=True) is killed the
-    instant this CLI command returns and the Python interpreter exits,
-    so it can never really watch anything past a single invocation.
-    This spawns minisky/autostop_runner.py as its own process, detached
-    from this one (new session on POSIX, DETACHED_PROCESS on Windows),
-    so it keeps running after `minisky launch` exits.
-
-    Returns the path to the watcher's log file.
+    Thin wrapper around the shared spawn_autostop_watcher() (also used
+    by api/core.py's ClusterController, so dashboard-launched clusters
+    get the same protection) that supplies this module's own `config`.
     """
-    import subprocess
-
-    log_path = config.log_dir / f"autostop-{vm_id}.log"
-    cmd = [
-        sys.executable, "-m", "minisky.autostop_runner",
-        vm_id, "--timeout-minutes", str(timeout_minutes),
-    ]
-
-    popen_kwargs = {"stdin": subprocess.DEVNULL}
-    if sys.platform == "win32":
-        popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        popen_kwargs["start_new_session"] = True
-
-    log_file = open(log_path, "a")
-    try:
-        subprocess.Popen(cmd, stdout=log_file, stderr=log_file, **popen_kwargs)
-    finally:
-        log_file.close()
-
-    return log_path
+    from .autostop_spawner import spawn_autostop_watcher
+    return spawn_autostop_watcher(vm_id, timeout_minutes, config)
 
 
 def _spawn_managed_job_runner(job_id: str) -> Path:

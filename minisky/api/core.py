@@ -37,6 +37,8 @@ from minisky.task import Task, ResourceRequirements
 from minisky.executor import Executor, ExecutorError
 from minisky.queue import JobStatus
 from minisky.state import StateManager
+from minisky.config import MiniSkyConfig
+from minisky.autostop_spawner import spawn_autostop_watcher
 
 logger = logging.getLogger(__name__)
 
@@ -445,9 +447,15 @@ class ClusterController:
     # marked ERROR rather than left looking like work is still happening.
     _IN_FLIGHT_STATES = (ClusterState.LAUNCHING, ClusterState.STOPPING, ClusterState.TERMINATING)
 
-    def __init__(self, event_bus: EventBus, state: Optional[StateManager] = None):
+    def __init__(
+        self,
+        event_bus: EventBus,
+        state: Optional[StateManager] = None,
+        config: Optional[MiniSkyConfig] = None,
+    ):
         self.event_bus = event_bus
         self.state = state or StateManager()
+        self.config = config or MiniSkyConfig()
         self._clusters: Dict[str, ClusterRecord] = {}
         self._state_locks: Dict[str, asyncio.Lock] = {}
         self._load_clusters()
@@ -608,6 +616,21 @@ class ClusterController:
                 })
             except Exception as e:
                 logger.warning(f"Failed to record cluster {cluster.cluster_id}'s VM in state.py: {e}")
+
+            # A `minisky launch`'d VM gets a detached autostop watcher
+            # automatically; a dashboard/API-launched one previously
+            # didn't (autostop_minutes was persisted but nothing ever
+            # enforced it), so it could run unattended forever even
+            # though the field was right there suggesting it was
+            # protected. Same watcher process cli.py spawns, so both
+            # paths behave identically.
+            if cluster.autostop_minutes:
+                try:
+                    await asyncio.to_thread(
+                        spawn_autostop_watcher, cluster.vm_id, cluster.autostop_minutes, self.config
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to spawn autostop watcher for {cluster.vm_id}: {e}")
 
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.UP)
