@@ -840,9 +840,11 @@ def serve(
     For frontend development with hot-reload instead, run the dashboard's
     own dev server separately (`cd dashboard && npm run dev`).
 
-    Note: the API server tracks its own clusters/jobs (created via this
-    server or the dashboard), separate from `minisky launch`'s VM state -
-    it doesn't yet show VMs launched via the CLI.
+    Clusters are shared with the CLI: a VM launched via `minisky launch`/
+    `minisky cluster launch` shows up here too (tagged as CLI-origin) and
+    can be stopped/started/terminated from the dashboard. Jobs are not
+    shared yet - job submission/execution here is separate from
+    `minisky queue`/`minisky jobs`.
 
     Example:
         minisky serve

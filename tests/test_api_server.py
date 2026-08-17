@@ -28,6 +28,8 @@ from minisky.api.core import (
 from minisky.providers.mock import MockProvider
 from minisky.providers.base import ProviderError
 from minisky.executor import ExecutorError
+from minisky.task import Task, ResourceRequirements
+from minisky.state import StateManager
 
 
 async def _wait_until(predicate, timeout=5.0, interval=0.05):
@@ -260,6 +262,175 @@ class TestClusterControllerRealProviderWiring:
             await _wait_until(lambda: cluster.cluster_id not in controller._clusters)
 
         assert vm_id not in provider._instances
+
+
+class TestCliDashboardClusterUnification:
+    """
+    ClusterController used to be a completely separate world from
+    `minisky launch`/`minisky cluster launch`: it had its own `clusters`
+    persistence table, and never touched state.py's `vms` table (the one
+    minisky status/cost-report/terminate all read) either way. A VM
+    launched via the CLI was invisible to the dashboard, and a cluster
+    created via the dashboard was invisible to the CLI. These tests
+    cover the fix: ClusterController now reads state.py's vms table as a
+    second source of clusters (source="cli"), and writes to it when it
+    launches a VM itself (source="api") so the CLI can see those too.
+    """
+
+    def test_cli_launched_vm_appears_via_list_clusters(self, tmp_path):
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        state.add_vm({
+            "vm_id": "mock-abc12345",
+            "ip_address": "127.0.0.1",
+            "status": "running",
+            "provider": "mock",
+            "task_name": "my-task",
+        })
+        controller = ClusterController(EventBus(), state=state)
+
+        clusters = controller.list_clusters()
+
+        assert len(clusters) == 1
+        c = clusters[0]
+        assert c.cluster_id == "mock-abc12345"
+        assert c.source == "cli"
+        assert c.state == ClusterState.UP
+        assert c.vm_id == "mock-abc12345"
+        assert c.num_nodes == 1
+
+    def test_cli_multi_node_cluster_groups_by_cluster_id(self, tmp_path):
+        """Mirrors cluster.py's ClusterManager convention: VMs sharing a
+        cluster_id tag (from `minisky cluster launch`) form one cluster,
+        head node identified by node_role."""
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        state.add_vm({
+            "vm_id": "mock-head01", "ip_address": "10.0.0.1", "status": "running",
+            "provider": "mock", "task_name": "train",
+            "cluster_id": "cluster-xyz", "node_role": "head",
+        })
+        state.add_vm({
+            "vm_id": "mock-work01", "ip_address": "10.0.0.2", "status": "running",
+            "provider": "mock", "task_name": "train",
+            "cluster_id": "cluster-xyz", "node_role": "worker", "rank": 1,
+        })
+        controller = ClusterController(EventBus(), state=state)
+
+        clusters = controller.list_clusters()
+
+        assert len(clusters) == 1
+        c = clusters[0]
+        assert c.cluster_id == "cluster-xyz"
+        assert c.num_nodes == 2
+        assert c.vm_id == "mock-head01"
+        assert c.worker_vm_ids == ["mock-work01"]
+        assert c.worker_ips == ["10.0.0.2"]
+
+    def test_terminated_vm_not_listed(self, tmp_path):
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        state.add_vm({
+            "vm_id": "mock-gone", "ip_address": "1.2.3.4", "status": "running",
+            "provider": "mock", "task_name": "t",
+        })
+        state.remove_vm("mock-gone")
+        controller = ClusterController(EventBus(), state=state)
+
+        assert controller.list_clusters() == []
+
+    def test_get_cluster_resolves_a_cli_vm(self, tmp_path):
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        state.add_vm({
+            "vm_id": "mock-abc12345", "ip_address": "127.0.0.1", "status": "stopped",
+            "provider": "mock", "task_name": "t",
+        })
+        controller = ClusterController(EventBus(), state=state)
+
+        cluster = controller.get_cluster("mock-abc12345")
+
+        assert cluster is not None
+        assert cluster.state == ClusterState.STOPPED
+
+    def test_get_cluster_unknown_id_returns_none(self, tmp_path):
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        controller = ClusterController(EventBus(), state=state)
+        assert controller.get_cluster("nonexistent") is None
+
+    @pytest.mark.asyncio
+    async def test_api_launched_cluster_appears_in_state_vms(self, tmp_path):
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        controller = ClusterController(EventBus(), state=state)
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
+
+        with patch.object(core_module, "get_provider", return_value=provider):
+            cluster = await controller.create_cluster(name="c1", provider="mock", accelerators={"A100": 1})
+            await controller.launch_cluster(cluster.cluster_id)
+            await _wait_until(lambda: cluster.state != ClusterState.LAUNCHING)
+
+        vms = state.list_vms()
+        assert len(vms) == 1
+        assert vms[0]["vm_id"] == cluster.vm_id
+        assert vms[0]["cluster_id"] == cluster.cluster_id
+        assert vms[0]["node_role"] == "head"
+
+    @pytest.mark.asyncio
+    async def test_dashboard_terminate_removes_cli_vm_from_state(self, tmp_path):
+        """
+        Regression coverage: terminating a cluster via the dashboard must
+        remove the VM from state.py too, not just the API's own clusters
+        table - otherwise `minisky status` keeps showing a VM that's
+        actually gone (and, before source-tagging existed, a cluster
+        created via the dashboard never wrote to state.py at all, so
+        this couldn't have been tested before it could even matter).
+        """
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        controller = ClusterController(EventBus(), state=state)
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
+
+        with patch.object(core_module, "get_provider", return_value=provider):
+            cluster = await controller.create_cluster(name="c1", provider="mock", accelerators={"A100": 1})
+            await controller.launch_cluster(cluster.cluster_id)
+            await _wait_until(lambda: cluster.state != ClusterState.LAUNCHING)
+            assert len(state.list_vms()) == 1
+
+            await controller.terminate_cluster(cluster.cluster_id)
+            await _wait_until(lambda: cluster.cluster_id not in controller._clusters)
+
+        assert state.list_vms() == []
+
+    @pytest.mark.asyncio
+    async def test_stop_via_dashboard_adopts_cli_cluster_and_updates_state(self, tmp_path):
+        """
+        A `minisky launch`'d VM stopped via the dashboard must actually
+        get stopped (real provider call) and reflected in state.py, and
+        from then on be tracked as a normal (adopted) API cluster - not
+        re-synthesized (and not double-listed) on the next list_clusters().
+        """
+        state = StateManager(db_path=str(tmp_path / "state.db"))
+        provider = MockProvider({"simulate_delay": False, "state_file": str(tmp_path / "mock_state.json")})
+        task = Task(name="cli-task", run=["echo hi"], resources=ResourceRequirements(gpu="A100"))
+        vm_info = provider.launch(task)
+        state.add_vm(vm_info)
+
+        controller = ClusterController(EventBus(), state=state)
+
+        with patch.object(core_module, "get_provider", return_value=provider):
+            await controller.stop_cluster(vm_info["vm_id"])
+            await _wait_until(
+                lambda: controller._clusters.get(vm_info["vm_id"]) is not None
+                and controller._clusters[vm_info["vm_id"]].state != ClusterState.STOPPING
+            )
+
+        assert controller._clusters[vm_info["vm_id"]].state == ClusterState.STOPPED
+        assert provider._instances[vm_info["vm_id"]]["status"] == "stopped"
+        assert state.get_vm(vm_info["vm_id"])["status"] == "stopped"
+
+        # Adopted now - must appear exactly once (not re-synthesized as a
+        # second, duplicate entry alongside the now-tracked one). source
+        # stays "cli": adoption makes it trackable/operable from the
+        # dashboard, but it's still honestly a CLI-launched VM in origin.
+        clusters = controller.list_clusters()
+        matching = [c for c in clusters if c.cluster_id == vm_info["vm_id"]]
+        assert len(matching) == 1
+        assert matching[0].source == "cli"
 
 
 def _up_cluster(cluster_id="sky-fixed01", provider="mock"):

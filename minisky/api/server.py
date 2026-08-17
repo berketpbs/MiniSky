@@ -93,6 +93,13 @@ class ClusterResponse(BaseModel):
     instance_type: Optional[str] = None
     accelerators: Optional[Dict[str, int]] = None
     autostop_minutes: Optional[int] = None
+    # "cli" if this cluster is a `minisky launch`/`minisky cluster launch`
+    # VM the dashboard is showing but didn't create itself; "api" if it
+    # was created through this server (POST /v1/clusters). Lets the UI
+    # tell users the two aren't quite the same thing (e.g. a CLI-origin
+    # cluster gets fully tracked here only after the first dashboard
+    # stop/start/terminate touches it).
+    source: str = "api"
 
     @classmethod
     def from_record(cls, record: ClusterRecord) -> "ClusterResponse":
@@ -106,6 +113,7 @@ class ClusterResponse(BaseModel):
             launched_at=record.launched_at.isoformat() if record.launched_at else None,
             instance_type=record.instance_type,
             accelerators=record.accelerators,
+            source=record.source,
             autostop_minutes=record.autostop_minutes,
         )
 

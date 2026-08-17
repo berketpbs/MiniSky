@@ -34,6 +34,13 @@
               <router-link :to="`/clusters/${cluster.cluster_id}`" class="text-blue-400 hover:underline">
                 {{ cluster.name }}
               </router-link>
+              <span
+                v-if="cluster.source === 'cli'"
+                title="Launched via the minisky CLI, not created through this dashboard"
+                class="ml-2 px-1.5 py-0.5 rounded text-xs bg-gray-600 text-gray-200"
+              >
+                CLI
+              </span>
             </td>
             <td class="px-6 py-4 text-gray-300">{{ cluster.provider }}</td>
             <td class="px-6 py-4">

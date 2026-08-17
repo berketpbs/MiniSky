@@ -125,6 +125,14 @@ class ClusterRecord:
     # "mock-abc123", "runpod-xxx", "aws-i-xxx") - required to call
     # provider.status()/stop()/terminate() on the right instance.
     vm_id: Optional[str] = None
+    # Worker nodes' vm_ids, parallel to worker_ips - only ever populated
+    # for a cluster synthesized from a `minisky cluster launch` group
+    # (this controller's own _do_launch only ever provisions one VM
+    # regardless of num_nodes, so an API-launched cluster never has any).
+    # Needed so stop/start/terminate actually reach every node, not just
+    # the head - a multi-node cluster otherwise ends up with orphaned,
+    # still-billing worker VMs after a dashboard-initiated terminate.
+    worker_vm_ids: List[str] = field(default_factory=list)
 
     # Lifecycle
     launched_at: Optional[datetime] = None
@@ -138,6 +146,15 @@ class ClusterRecord:
     # Metadata
     task_yaml: Optional[str] = None
     user_metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # "api" for clusters created through this controller (POST
+    # /v1/clusters), "cli" for ones synthesized on the fly from a VM
+    # `minisky launch`/`minisky cluster launch` created directly in
+    # state.py's vms table, which this controller never wrote itself.
+    # Surfaced so the dashboard can tell the two apart rather than
+    # silently presenting CLI-launched VMs as if they'd always been
+    # first-class API-managed clusters.
+    source: str = "api"
 
 
 @dataclass
@@ -207,6 +224,81 @@ def _job_from_dict(data: Dict[str, Any]) -> JobRecord:
         if d.get(key):
             d[key] = datetime.fromisoformat(d[key])
     return JobRecord(**d)
+
+
+# =============================================================================
+# CLI <-> API cluster unification
+# =============================================================================
+#
+# `minisky launch` and `minisky cluster launch` write plain VM records
+# straight into StateManager's `vms` table (see state.py, cluster.py) -
+# they know nothing about ClusterController and never did. Historically
+# that meant a CLI-launched VM was completely invisible to the API/
+# dashboard, and a dashboard-launched cluster was equally invisible to
+# `minisky status`. The functions below let ClusterController treat
+# state.py's vms table as a second source of clusters it didn't create
+# itself, converting on the fly rather than requiring a migration or a
+# duplicate persistence path.
+
+def _group_vms_for_synthetic_clusters(vms: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Group VM records the way cluster.py's ClusterManager does: VMs
+    sharing a `cluster_id` metadata tag (from `minisky cluster launch`)
+    form one group; a VM with no such tag (a plain `minisky launch`) is
+    its own singleton group, keyed by its own vm_id.
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for vm in vms:
+        key = vm.get('cluster_id') or vm['vm_id']
+        groups.setdefault(key, []).append(vm)
+    return groups
+
+
+def _synthesize_cluster_from_vms(cluster_id: str, vms: List[Dict[str, Any]]) -> ClusterRecord:
+    """
+    Build a ClusterRecord from one or more state.py VM records that
+    ClusterController never created itself (source="cli") - either a
+    single untagged `minisky launch` VM, or a `minisky cluster launch`
+    group (head node has node_role="head" per cluster.py's convention;
+    others are workers).
+    """
+    head = next((v for v in vms if v.get('node_role') == 'head'), vms[0])
+    workers = [v for v in vms if v is not head]
+    worker_ips = [v['ip_address'] for v in workers if v.get('ip_address')]
+    worker_vm_ids = [v['vm_id'] for v in workers]
+
+    accelerators = None
+    resources = head.get('resources')
+    if isinstance(resources, dict) and resources.get('gpu'):
+        accelerators = {resources['gpu']: resources.get('gpu_count') or 1}
+    elif head.get('gpu_type'):
+        accelerators = {head['gpu_type']: 1}
+
+    launched_at = None
+    if head.get('created_at'):
+        try:
+            launched_at = datetime.fromisoformat(str(head['created_at']))
+        except ValueError:
+            pass
+
+    return ClusterRecord(
+        cluster_id=cluster_id,
+        name=head.get('task_name') or cluster_id,
+        state=ClusterState.from_vm_status(head.get('status', 'unknown')),
+        provider=head.get('provider', 'unknown'),
+        num_nodes=len(vms),
+        instance_type=head.get('instance_type') or head.get('machine_type'),
+        accelerators=accelerators,
+        head_ip=head.get('ip_address'),
+        worker_ips=worker_ips,
+        ssh_port=head.get('ssh_port', 22),
+        ssh_user=head.get('ssh_user'),
+        vm_id=head['vm_id'],
+        worker_vm_ids=worker_vm_ids,
+        launched_at=launched_at,
+        autostop_minutes=head.get('autostop_minutes'),
+        source="cli",
+    )
 
 
 # =============================================================================
@@ -499,6 +591,24 @@ class ClusterController:
             cluster.instance_type = vm_info.get("instance_type", cluster.instance_type)
             cluster.launched_at = datetime.utcnow()
 
+            # Also record the VM in state.py's vms table - the same
+            # store `minisky launch`/`minisky cluster launch` use - so a
+            # cluster created via the API/dashboard is visible to
+            # `minisky status`/`cost-report`/`terminate` too, not just
+            # to this controller's own (separate) persistence.
+            # node_role="head"/cluster_id tag matches cluster.py's
+            # convention, in case multi-node cluster launches are added
+            # here later.
+            try:
+                self.state.add_vm({
+                    **vm_info,
+                    'cluster_id': cluster.cluster_id,
+                    'node_role': 'head',
+                    'autostop_minutes': cluster.autostop_minutes,
+                })
+            except Exception as e:
+                logger.warning(f"Failed to record cluster {cluster.cluster_id}'s VM in state.py: {e}")
+
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.UP)
 
@@ -512,7 +622,7 @@ class ClusterController:
 
     async def stop_cluster(self, cluster_id: str) -> ClusterRecord:
         """Stop a running cluster (preserves disk)."""
-        cluster = self._clusters.get(cluster_id)
+        cluster = self._adopt_if_synthetic(cluster_id)
         if not cluster:
             raise ValueError(f"Cluster not found: {cluster_id}")
 
@@ -522,12 +632,27 @@ class ClusterController:
         asyncio.create_task(self._do_stop(cluster))
         return cluster
 
+    @staticmethod
+    def _all_node_vm_ids(cluster: ClusterRecord) -> List[str]:
+        """
+        Every VM belonging to this cluster - head plus workers. Only
+        ever more than one entry for a cluster synthesized from a
+        `minisky cluster launch` group; this controller's own _do_launch
+        never provisions more than the head node itself.
+        """
+        return [vm_id for vm_id in [cluster.vm_id, *cluster.worker_vm_ids] if vm_id]
+
     async def _do_stop(self, cluster: ClusterRecord):
-        """Background task to stop the cluster's VM via its provider."""
+        """Background task to stop every node's VM via its provider."""
         try:
             if cluster.vm_id:
                 provider = get_provider(cluster.provider)
-                await asyncio.to_thread(provider.stop, cluster.vm_id)
+                for vm_id in self._all_node_vm_ids(cluster):
+                    await asyncio.to_thread(provider.stop, vm_id)
+                    try:
+                        self.state.update_status(vm_id, 'stopped')
+                    except Exception as e:
+                        logger.warning(f"Failed to update state.py status for {vm_id}: {e}")
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.STOPPED)
         except Exception as e:
@@ -536,7 +661,7 @@ class ClusterController:
 
     async def start_cluster(self, cluster_id: str) -> ClusterRecord:
         """Start a previously stopped cluster."""
-        cluster = self._clusters.get(cluster_id)
+        cluster = self._adopt_if_synthetic(cluster_id)
         if not cluster:
             raise ValueError(f"Cluster not found: {cluster_id}")
 
@@ -547,11 +672,16 @@ class ClusterController:
         return cluster
 
     async def _do_start(self, cluster: ClusterRecord):
-        """Background task to start a stopped cluster's VM via its provider."""
+        """Background task to start every stopped node's VM via its provider."""
         try:
             provider = get_provider(cluster.provider)
             if cluster.vm_id:
-                await asyncio.to_thread(provider.start, cluster.vm_id)
+                for vm_id in self._all_node_vm_ids(cluster):
+                    await asyncio.to_thread(provider.start, vm_id)
+                    try:
+                        self.state.update_status(vm_id, 'running')
+                    except Exception as e:
+                        logger.warning(f"Failed to update state.py status for {vm_id}: {e}")
 
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.UP)
@@ -561,7 +691,7 @@ class ClusterController:
 
     async def terminate_cluster(self, cluster_id: str) -> ClusterRecord:
         """Terminate a cluster (destroys all resources)."""
-        cluster = self._clusters.get(cluster_id)
+        cluster = self._adopt_if_synthetic(cluster_id)
         if not cluster:
             raise ValueError(f"Cluster not found: {cluster_id}")
 
@@ -572,11 +702,16 @@ class ClusterController:
         return cluster
 
     async def _do_terminate(self, cluster: ClusterRecord):
-        """Background task to terminate the cluster's VM via its provider."""
+        """Background task to terminate every node's VM via its provider."""
         try:
             if cluster.vm_id:
                 provider = get_provider(cluster.provider)
-                await asyncio.to_thread(provider.terminate, cluster.vm_id)
+                for vm_id in self._all_node_vm_ids(cluster):
+                    await asyncio.to_thread(provider.terminate, vm_id)
+                    try:
+                        self.state.remove_vm(vm_id)
+                    except Exception as e:
+                        logger.warning(f"Failed to remove {vm_id} from state.py: {e}")
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.TERMINATED)
 
@@ -594,13 +729,75 @@ class ClusterController:
             async with await self._get_lock(cluster.cluster_id):
                 await self._transition_state(cluster, ClusterState.ERROR, reason=str(e))
 
+    def _synthetic_clusters(self) -> Dict[str, ClusterRecord]:
+        """
+        Build synthetic (source="cli") ClusterRecords for VMs in
+        state.py's vms table that this controller doesn't already track
+        under that cluster_id, and whose underlying vm_id hasn't already
+        been adopted into self._clusters (see stop/start/terminate_cluster).
+        """
+        tracked_vm_ids = {c.vm_id for c in self._clusters.values() if c.vm_id}
+        try:
+            vms = self.state.list_vms()
+        except Exception:
+            return {}
+
+        synthetic: Dict[str, ClusterRecord] = {}
+        for cluster_id, group_vms in _group_vms_for_synthetic_clusters(vms).items():
+            if cluster_id in self._clusters:
+                continue
+            head_vm_id = next(
+                (v['vm_id'] for v in group_vms if v.get('node_role') == 'head'),
+                group_vms[0]['vm_id'],
+            )
+            if head_vm_id in tracked_vm_ids:
+                continue
+            try:
+                synthetic[cluster_id] = _synthesize_cluster_from_vms(cluster_id, group_vms)
+            except (KeyError, IndexError):
+                continue
+        return synthetic
+
     def get_cluster(self, cluster_id: str) -> Optional[ClusterRecord]:
-        """Get cluster by ID."""
-        return self._clusters.get(cluster_id)
+        """
+        Get cluster by ID - checks clusters created through this
+        controller first, then falls back to synthesizing one from a
+        `minisky launch`/`minisky cluster launch` VM this controller
+        never created itself.
+        """
+        cluster = self._clusters.get(cluster_id)
+        if cluster:
+            return cluster
+        return self._synthetic_clusters().get(cluster_id)
+
+    def _adopt_if_synthetic(self, cluster_id: str) -> Optional[ClusterRecord]:
+        """
+        Resolve cluster_id for a write operation (stop/start/terminate).
+        If it's only visible via _synthetic_clusters() (a CLI-launched
+        VM/cluster this controller has never tracked before), adopt it
+        into self._clusters and persist it - from this point on it's a
+        normal API-tracked cluster like any other, still pointing at the
+        same underlying VM and still present in state.py's vms table.
+        """
+        cluster = self._clusters.get(cluster_id)
+        if cluster:
+            return cluster
+
+        cluster = self._synthetic_clusters().get(cluster_id)
+        if not cluster:
+            return None
+
+        self._clusters[cluster_id] = cluster
+        self._persist_cluster(cluster)
+        return cluster
 
     def list_clusters(self, state: Optional[ClusterState] = None) -> List[ClusterRecord]:
-        """List clusters, optionally filtered by state."""
-        clusters = list(self._clusters.values())
+        """
+        List clusters, optionally filtered by state. Includes both
+        clusters created through this controller and CLI-launched VMs/
+        clusters synthesized from state.py - see _synthetic_clusters().
+        """
+        clusters = list(self._clusters.values()) + list(self._synthetic_clusters().values())
         if state:
             clusters = [c for c in clusters if c.state == state]
         return clusters

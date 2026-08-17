@@ -8,7 +8,7 @@ Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine lear
 - **Autostop**: Every launched VM is watched by a detached background process and stopped after 30 idle minutes by default (override per-task with `autostop_minutes`, or skip it entirely with `--no-autostop`) - protects against runaway bills even after `minisky launch` returns or the terminal is closed.
 - **File Synchronization**: Automatically sync local directories (`workdir`) to remote VMs.
 - **Managed Jobs**: `minisky jobs launch` automatically relaunches a task if its (spot) instance is preempted, with checkpoint save/restore.
-- **Web Dashboard**: `minisky serve` runs a FastAPI + Vue.js dashboard for creating/monitoring clusters and jobs through a browser instead of the terminal. It's a separate cluster/job tracking system from `minisky launch`'s VM state - see [Web Dashboard](#web-dashboard) below.
+- **Web Dashboard**: `minisky serve` runs a FastAPI + Vue.js dashboard for creating/monitoring clusters through a browser instead of the terminal. VMs launched via `minisky launch`/`minisky cluster launch` show up there too, and vice versa - see [Web Dashboard](#web-dashboard) below.
 
 ## Installation
 
@@ -126,10 +126,13 @@ minisky serve                 # now also serves the built UI at http://localhost
 For frontend development with hot-reload, run the dashboard's own dev server
 instead (`cd dashboard && npm run dev`, on :3000) alongside `minisky serve`.
 
-**Note:** the dashboard's clusters/jobs are tracked by the API server
-(`minisky/api/core.py`), a separate system from the VM state `minisky launch`
-uses - a VM launched via the CLI doesn't show up in the dashboard yet, and
-vice versa.
+**Note:** clusters are shared between the CLI and the dashboard - a VM
+launched via `minisky launch`/`minisky cluster launch` shows up in the
+dashboard (tagged `CLI` there) and can be stopped/started/terminated from it,
+and a cluster created via the dashboard shows up in `minisky status` too.
+**Jobs are not** shared yet: the dashboard's job submission/execution
+(`minisky/api/core.py`'s `JobController`) is a separate system from
+`minisky queue`/`minisky jobs` on the CLI side.
 
 ## Development
 
