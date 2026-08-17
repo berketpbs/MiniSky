@@ -7,8 +7,8 @@ Lightweight cloud orchestration tool inspired by SkyPilot. Run your machine lear
 - **Cost Optimizer**: Automatically selects the cheapest provider for your requirements.
 - **Autostop**: Every launched VM is watched by a detached background process and stopped after 30 idle minutes by default (override per-task with `autostop_minutes`, or skip it entirely with `--no-autostop`) - protects against runaway bills even after `minisky launch` returns or the terminal is closed.
 - **File Synchronization**: Automatically sync local directories (`workdir`) to remote VMs.
-- **Managed Jobs**: Automatic recovery from spot instance preemptions.
-- **CLI & Web Dashboard**: Manage your instances from terminal or a Vue.js web UI.
+- **Managed Jobs**: `minisky jobs launch` automatically relaunches a task if its (spot) instance is preempted, with checkpoint save/restore.
+- **Web Dashboard**: `minisky serve` runs a FastAPI + Vue.js dashboard for creating/monitoring clusters and jobs through a browser instead of the terminal. It's a separate cluster/job tracking system from `minisky launch`'s VM state - see [Web Dashboard](#web-dashboard) below.
 
 ## Installation
 
@@ -107,6 +107,29 @@ minisky jobs launch|list|status|cancel    # Managed jobs: auto-relaunch on spot 
 ```
 
 Run `minisky <command> --help` for full options on any command.
+
+## Web Dashboard
+
+```bash
+minisky serve                 # Starts the API on :8000 (and the UI too, if built - see below)
+```
+
+By default this serves only the FastAPI backend (REST + WebSocket at `/v1`).
+To also serve the Vue web UI from that same process:
+```bash
+cd dashboard
+npm install
+npm run build
+cd ..
+minisky serve                 # now also serves the built UI at http://localhost:8000/
+```
+For frontend development with hot-reload, run the dashboard's own dev server
+instead (`cd dashboard && npm run dev`, on :3000) alongside `minisky serve`.
+
+**Note:** the dashboard's clusters/jobs are tracked by the API server
+(`minisky/api/core.py`), a separate system from the VM state `minisky launch`
+uses - a VM launched via the CLI doesn't show up in the dashboard yet, and
+vice versa.
 
 ## Development
 

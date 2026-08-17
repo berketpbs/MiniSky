@@ -8,6 +8,7 @@ testable/reusable. This module only defines the FastAPI app, request/
 response DTOs, and route handlers that delegate to those controllers.
 """
 
+from pathlib import Path
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,7 @@ ensure_utf8_console()
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from minisky.api.core import (
@@ -292,6 +294,51 @@ async def health_check():
         "clusters": len(cluster_controller.list_clusters()),
         "jobs": len(job_controller.list_jobs())
     }
+
+
+# --- Dashboard static files (dashboard/dist, from `npm run build`) ---
+
+# minisky serve is meant to be the one command that starts both the API
+# and the web UI, the way `sky dashboard`-equivalents typically work -
+# without this, the built dashboard has no server to run it: the vite
+# dev server is dev-only, and nothing else in this codebase serves the
+# built static files. Computed once at import time; existence is
+# re-checked per-request below since the dashboard may not be built yet
+# (pure API usage) or gets built after the server process already started.
+DASHBOARD_DIST = Path(__file__).resolve().parent.parent.parent / "dashboard" / "dist"
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_dashboard(full_path: str):
+    """
+    Serve the built Vue dashboard for any path that isn't one of the API
+    routes above (those all match first - FastAPI/Starlette try routes
+    in registration order, and this is registered last).
+
+    Vue Router uses history mode (createWebHistory), so a browser
+    refresh on a client-side route like /clusters/abc123 has to fall
+    back to index.html and let Vue Router resolve it client-side,
+    rather than 404 the way a plain static file server would.
+    """
+    if not DASHBOARD_DIST.is_dir():
+        raise HTTPException(
+            status_code=404,
+            detail="Dashboard not built. Run `npm install && npm run build` in dashboard/, "
+                   "or use `npm run dev` for local development.",
+        )
+
+    if full_path:
+        # full_path is attacker-controlled - resolve and confirm it's
+        # still inside DASHBOARD_DIST before serving, so `../../../etc/passwd`
+        # style traversal can't escape the dashboard's own build output.
+        candidate = (DASHBOARD_DIST / full_path).resolve()
+        if DASHBOARD_DIST in candidate.parents and candidate.is_file():
+            return FileResponse(str(candidate))
+
+    index = DASHBOARD_DIST / "index.html"
+    if not index.is_file():
+        raise HTTPException(status_code=404, detail="Dashboard build is missing index.html")
+    return FileResponse(str(index))
 
 
 # =============================================================================

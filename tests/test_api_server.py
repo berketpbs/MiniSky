@@ -7,6 +7,7 @@ that delegates to them.
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -484,3 +485,107 @@ class TestClusterResponseSerialization:
 
         assert data["accelerators"] == {"A100": 2}
         assert data["autostop_minutes"] == 30
+
+
+class TestDashboardStaticServing:
+    """
+    Tests for serving the built Vue dashboard (dashboard/dist) from the
+    same FastAPI process. useApi.js calls unprefixed paths like
+    /v1/clusters directly (no /api indirection) - this only works in
+    production if the same server that answers those API routes also
+    serves the dashboard's static files and falls back to index.html
+    for Vue Router's client-side routes.
+    """
+
+    def _client(self):
+        from fastapi.testclient import TestClient
+        from minisky.api.server import app
+        return TestClient(app)
+
+    def test_not_built_returns_404_with_helpful_message(self, tmp_path):
+        from minisky.api import server as server_module
+
+        with patch.object(server_module, "DASHBOARD_DIST", tmp_path / "does-not-exist"):
+            r = self._client().get("/")
+
+        assert r.status_code == 404
+        assert "not built" in r.json()["detail"].lower()
+
+    def test_serves_index_html_at_root(self, tmp_path):
+        from minisky.api import server as server_module
+
+        (tmp_path / "index.html").write_text("<html>dashboard</html>")
+
+        with patch.object(server_module, "DASHBOARD_DIST", tmp_path):
+            r = self._client().get("/")
+
+        assert r.status_code == 200
+        assert "dashboard" in r.text
+
+    def test_spa_route_falls_back_to_index_html(self, tmp_path):
+        """Vue Router uses history mode - a direct request for a
+        client-side route like /clusters/abc123 isn't a real file, so it
+        must fall back to index.html and let Vue Router resolve it."""
+        from minisky.api import server as server_module
+
+        (tmp_path / "index.html").write_text("<html>dashboard</html>")
+
+        with patch.object(server_module, "DASHBOARD_DIST", tmp_path):
+            r = self._client().get("/clusters/abc123")
+
+        assert r.status_code == 200
+        assert "dashboard" in r.text
+
+    def test_real_static_asset_is_served_directly(self, tmp_path):
+        (tmp_path / "index.html").write_text("<html>dashboard</html>")
+        assets_dir = tmp_path / "assets"
+        assets_dir.mkdir()
+        (assets_dir / "app.js").write_text("console.log('hi')")
+
+        from minisky.api import server as server_module
+
+        with patch.object(server_module, "DASHBOARD_DIST", tmp_path):
+            r = self._client().get("/assets/app.js")
+
+        assert r.status_code == 200
+        assert "console.log" in r.text
+
+    def test_api_routes_are_not_shadowed_by_the_catch_all(self, tmp_path):
+        """/health and /v1/* must keep hitting their real handlers, not
+        the dashboard catch-all, even when a dashboard build exists."""
+        (tmp_path / "index.html").write_text("<html>dashboard</html>")
+
+        from minisky.api import server as server_module
+
+        with patch.object(server_module, "DASHBOARD_DIST", tmp_path):
+            r = self._client().get("/health")
+
+        assert r.status_code == 200
+        assert r.json()["status"] == "healthy"
+
+    @pytest.mark.asyncio
+    async def test_path_traversal_cannot_escape_dist_directory(self, tmp_path):
+        """
+        A crafted path must not be able to read files outside
+        DASHBOARD_DIST. Calls the route function directly with a raw
+        full_path containing '..' segments - going through TestClient/
+        httpx wouldn't actually exercise this: httpx normalizes '..' out
+        of the URL client-side before the request is even sent, so a
+        request through the client can never reach the handler with
+        those segments still in full_path regardless of whether the
+        server-side guard works.
+        """
+        dist = tmp_path / "dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<html>dashboard</html>")
+        secret = tmp_path / "secret.txt"
+        secret.write_text("do not serve me")
+
+        from minisky.api import server as server_module
+
+        with patch.object(server_module, "DASHBOARD_DIST", dist):
+            response = await server_module.serve_dashboard("../secret.txt")
+
+        # FileResponse resolves the file to serve into .path; assert it's
+        # index.html, not the secret file outside DASHBOARD_DIST.
+        assert Path(response.path) == dist / "index.html"

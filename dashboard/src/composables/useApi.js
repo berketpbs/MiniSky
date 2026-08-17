@@ -2,7 +2,12 @@
  * API composable for MiniSky dashboard
  */
 
-const API_BASE = '/api'
+// Matches the FastAPI server's actual route prefix (/v1/..., /health) with
+// no indirection - works unmodified whether the dashboard is served by the
+// same process as the API (minisky serve, production) or by the vite dev
+// server (which proxies these exact paths straight through, see
+// vite.config.js) - no rewrite/stripping needed in either case.
+const API_BASE = ''
 
 export function useApi() {
 

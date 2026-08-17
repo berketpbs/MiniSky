@@ -824,6 +824,46 @@ def check():
             console.print(f"  [yellow]![/yellow] No SSH key configured (will use ssh-agent)")
 
 
+# --- Serve (API + dashboard) ---
+
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port to bind"),
+):
+    """
+    Start the MiniSky API server and web dashboard.
+
+    Serves the FastAPI backend (REST + WebSocket) and, if the dashboard
+    has been built (`cd dashboard && npm install && npm run build`),
+    the Vue web UI from the same process at http://<host>:<port>/.
+    For frontend development with hot-reload instead, run the dashboard's
+    own dev server separately (`cd dashboard && npm run dev`).
+
+    Note: the API server tracks its own clusters/jobs (created via this
+    server or the dashboard), separate from `minisky launch`'s VM state -
+    it doesn't yet show VMs launched via the CLI.
+
+    Example:
+        minisky serve
+        minisky serve --port 9000
+    """
+    from .api.server import run_server, DASHBOARD_DIST
+
+    console.print(Panel("[bold]MiniSky API Server[/bold]", border_style="cyan"))
+    console.print(f"  API:  http://{host}:{port}/v1")
+    if DASHBOARD_DIST.is_dir():
+        console.print(f"  UI:   http://{host}:{port}/")
+    else:
+        console.print(
+            "  [yellow]![/yellow] Dashboard not built - only the API is available. "
+            "Run 'npm install && npm run build' in dashboard/ to serve the UI too."
+        )
+    console.print()
+
+    run_server(host=host, port=port)
+
+
 # --- GPUs ---
 
 @app.command()
