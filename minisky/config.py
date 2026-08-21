@@ -178,7 +178,7 @@ class MiniSkyConfig:
             Complete configuration as a dictionary.
         """
         self._ensure_loaded()
-        return self._data.copy()
+        return copy.deepcopy(self._data)
 
     def reset(self):
         """Reset configuration to defaults and persist."""
