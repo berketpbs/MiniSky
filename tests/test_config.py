@@ -58,6 +58,12 @@ class TestMiniSkyConfig:
         assert 'ssh' in data
         assert 'providers' in data
 
+    def test_show_does_not_expose_nested_state(self, tmp_config):
+        """Mutating show() output should not change the loaded config."""
+        data = tmp_config.show()
+        data['ssh']['retries'] = 99
+        assert tmp_config.get('ssh.retries') == 3
+
     def test_persistence(self, tmp_path):
         """Config should persist to disk and survive reload."""
         config_file = tmp_path / "config.yaml"
