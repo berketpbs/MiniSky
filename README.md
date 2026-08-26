@@ -126,6 +126,11 @@ minisky serve                 # now also serves the built UI at http://localhost
 For frontend development with hot-reload, run the dashboard's own dev server
 instead (`cd dashboard && npm run dev`, on :3000) alongside `minisky serve`.
 
+To bind the API to a different interface or port, pass `--host` and `--port`:
+```bash
+minisky serve --host 127.0.0.1 --port 8080
+```
+
 **Note:** clusters are shared between the CLI and the dashboard - a VM
 launched via `minisky launch`/`minisky cluster launch` shows up in the
 dashboard (tagged `CLI` there) and can be stopped/started/terminated from it,
@@ -141,4 +146,9 @@ Use `uv` to install dependencies and run tests:
 uv venv
 uv pip sync pyproject.toml
 uv run pytest tests/
+```
+
+Run a focused test module while developing:
+```bash
+uv run pytest tests/test_config.py
 ```
