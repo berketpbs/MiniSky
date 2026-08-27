@@ -18,6 +18,14 @@ from minisky.state import StateManager
 runner = CliRunner()
 
 
+def test_config_set_parses_yaml_scalars(mock_config):
+    """Config CLI should preserve numeric and boolean value types."""
+    result = runner.invoke(app, ["config", "set", "autostop_minutes", "10"])
+
+    assert result.exit_code == 0
+    assert mock_config.get("autostop_minutes") == 10
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

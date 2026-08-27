@@ -678,7 +678,9 @@ def config_set(
         minisky config set default_provider runpod
         minisky config set providers.runpod.api_key rp_xxxxx
     """
-    config.set(key, value)
+    import yaml as _yaml
+    parsed_value = _yaml.safe_load(value)
+    config.set(key, parsed_value)
     console.print(f"[green]>[/green] Set {key} = {value}")
 
 
