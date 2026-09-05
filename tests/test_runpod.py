@@ -111,6 +111,31 @@ class TestRunPodLaunch:
         assert vm_info["task_name"] == "test-gpu-job"
         provider._client.post.assert_called_once()
 
+    def test_launch_sends_public_key(self, provider, sample_task):
+        """
+        Without env.PUBLIC_KEY a RunPod pod boots with sshd running but no
+        authorized key, so it bills by the second while staying unreachable.
+        """
+        provider._client.post.return_value = _mock_response(200, {"pod": {"id": "abc123"}})
+        provider._client.get.return_value = _mock_response(200, {
+            "pod": {"publicIp": "203.0.113.50", "desiredStatus": "RUNNING"}
+        })
+
+        with patch("minisky.provisioner.SSHKeyManager.get_public_key",
+                   return_value="ssh-ed25519 AAAAtest minisky"):
+            provider.launch(sample_task)
+
+        payload = provider._client.post.call_args.kwargs["json"]
+        assert payload["env"]["PUBLIC_KEY"] == "ssh-ed25519 AAAAtest minisky"
+
+    def test_launch_public_key_failure_is_fatal(self, provider, sample_task):
+        """Better to refuse than to start a pod nothing can log into."""
+        with patch("minisky.provisioner.SSHKeyManager.get_public_key",
+                   side_effect=RuntimeError("ssh-keygen not found")):
+            with pytest.raises(ProviderError, match="SSH public key"):
+                provider.launch(sample_task)
+        provider._client.post.assert_not_called()
+
     def test_launch_no_gpu_raises(self, provider, sample_task_no_gpu):
         with pytest.raises(ProviderError, match="GPU type is required"):
             provider.launch(sample_task_no_gpu)
@@ -155,19 +180,27 @@ class TestRunPodLaunch:
 # ---------------------------------------------------------------------------
 
 class TestWaitForIp:
-    def test_wait_for_ip_immediate(self, provider):
+    def test_wait_for_endpoint_immediate(self, provider):
         provider._client.get.return_value = _mock_response(200, {
             "pod": {"publicIp": "1.2.3.4"}
         })
-        ip = provider._wait_for_ip("pod1", timeout=5)
+        ip, port = provider._wait_for_endpoint("pod1", timeout=5)
         assert ip == "1.2.3.4"
+        assert port == 22
+
+    def test_wait_for_endpoint_reports_proxied_ssh_port(self, provider):
+        """RunPod publishes sshd on a random high port, never on 22."""
+        provider._client.get.return_value = _mock_response(200, {
+            "pod": {"publicIp": "1.2.3.4", "portMappings": {"22": 40022}}
+        })
+        assert provider._wait_for_endpoint("pod1", timeout=5) == ("1.2.3.4", 40022)
 
     def test_wait_for_ip_error_state(self, provider):
         provider._client.get.return_value = _mock_response(200, {
             "pod": {"desiredStatus": "TERMINATED"}
         })
         with pytest.raises(ProviderError, match="TERMINATED"):
-            provider._wait_for_ip("pod1", timeout=5)
+            provider._wait_for_endpoint("pod1", timeout=5)
 
     @patch("minisky.providers.runpod.time.sleep", return_value=None)
     @patch("minisky.providers.runpod.time.time")
@@ -178,7 +211,74 @@ class TestWaitForIp:
             "pod": {"desiredStatus": "CREATED"}
         })
         with pytest.raises(ProviderError, match="Timeout"):
-            provider._wait_for_ip("pod1", timeout=10)
+            provider._wait_for_endpoint("pod1", timeout=10)
+
+
+class TestRunPodOrphanedPod:
+    """
+    A pod that never comes up must be torn down. The POST already created it,
+    so bailing out without terminating leaves it billing forever - and since
+    launch() raised, it never reaches the state DB either, so no `minisky
+    status`, `terminate` or autostop will ever find it again.
+    """
+
+    def _created(self, provider):
+        provider._client.post.return_value = _mock_response(
+            200, {"pod": {"id": "orphan123"}}
+        )
+
+    def test_unreachable_pod_is_terminated(self, provider, sample_task):
+        self._created(provider)
+        with patch.object(RunPodProvider, "_wait_for_endpoint",
+                          side_effect=TimeoutError("never got an IP")), \
+             patch.object(RunPodProvider, "terminate", return_value=True) as term:
+            with pytest.raises(ProviderError, match="has been terminated"):
+                provider.launch(sample_task)
+        term.assert_called_once_with("runpod-orphan123")
+
+    def test_keyboard_interrupt_still_terminates(self, provider, sample_task):
+        """Ctrl-C during the wait is exactly when a pod gets abandoned."""
+        self._created(provider)
+        with patch.object(RunPodProvider, "_wait_for_endpoint",
+                          side_effect=KeyboardInterrupt), \
+             patch.object(RunPodProvider, "terminate", return_value=True) as term:
+            with pytest.raises(ProviderError, match="KeyboardInterrupt"):
+                provider.launch(sample_task)
+        term.assert_called_once_with("runpod-orphan123")
+
+    def test_failed_cleanup_reports_the_pod_id(self, provider, sample_task):
+        """If cleanup fails too, the user must be told what to kill by hand."""
+        self._created(provider)
+        with patch.object(RunPodProvider, "_wait_for_endpoint",
+                          side_effect=TimeoutError("never got an IP")), \
+             patch.object(RunPodProvider, "terminate",
+                          side_effect=RuntimeError("API unreachable")):
+            with pytest.raises(ProviderError) as exc:
+                provider.launch(sample_task)
+
+        message = str(exc.value)
+        assert "orphan123" in message
+        assert "may still be running and billing" in message
+
+
+class TestRunPodSshPort:
+    """A pod reachable only on port 22 is a pod MiniSky can never log into."""
+
+    def test_prefers_port_mappings(self, provider):
+        assert provider._extract_ssh_port({"portMappings": {"22": 41000}}) == 41000
+
+    def test_falls_back_to_runtime_ports(self, provider):
+        pod = {"runtime": {"ports": [
+            {"privatePort": 8888, "publicPort": 50001},
+            {"privatePort": 22, "publicPort": 50002},
+        ]}}
+        assert provider._extract_ssh_port(pod) == 50002
+
+    def test_falls_back_to_ssh_port_field(self, provider):
+        assert provider._extract_ssh_port({"sshPort": 39999}) == 39999
+
+    def test_defaults_to_22_when_nothing_reported(self, provider):
+        assert provider._extract_ssh_port({}) == 22
 
 
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ API Reference: https://docs.runpod.io/
 
 import time
 import httpx
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from .base import BaseProvider, VMInfo, ProviderError
 from ..credentials import CredentialManager
 
@@ -113,8 +113,25 @@ class RunPodProvider(BaseProvider):
         if task.ports:
             payload['ports'] = ','.join([f"{p}/http" for p in task.ports])
 
-        if task.env:
-            payload['env'] = {k: str(v) for k, v in task.env.items()}
+        env = {k: str(v) for k, v in task.env.items()} if task.env else {}
+
+        # RunPod's images copy $PUBLIC_KEY into /root/.ssh/authorized_keys at
+        # boot; it is the only way to get a key onto a pod. Without it,
+        # startSsh gives you a running sshd with no authorized key at all -
+        # the pod bills by the second while MiniSky can never log in, so
+        # refuse to launch rather than burn money on an unreachable pod.
+        try:
+            from ..provisioner import SSHKeyManager
+
+            env['PUBLIC_KEY'] = SSHKeyManager().get_public_key()
+        except Exception as e:
+            raise ProviderError(
+                f"Cannot read an SSH public key to install on the pod: {e}. "
+                "RunPod pods are only reachable via the PUBLIC_KEY env var."
+            )
+
+        if env:
+            payload['env'] = env
 
         try:
             response = client.post('/pods', json=payload)
@@ -128,10 +145,21 @@ class RunPodProvider(BaseProvider):
         pod = data.get('pod', data)
         pod_id = pod.get('id', pod.get('podId', 'unknown'))
 
+        # The pod exists and is billing from here on, so anything that goes
+        # wrong before we can return usable vm_info has to take it down again.
+        try:
+            ip_address, ssh_port = self._wait_for_endpoint(pod_id)
+        except BaseException as e:
+            raise self.abort_launch(
+                f"RunPod pod {pod_id}",
+                lambda: self.terminate(f"runpod-{pod_id}"),
+                e,
+            )
+
         vm_info: VMInfo = {
             'vm_id': f"runpod-{pod_id}",
-            'ip_address': self._wait_for_ip(pod_id),
-            'ssh_port': int(pod.get('sshPort', 22)),
+            'ip_address': ip_address,
+            'ssh_port': ssh_port,
             'ssh_user': 'root',
             'status': 'running',
             'provider': 'runpod',
@@ -144,16 +172,41 @@ class RunPodProvider(BaseProvider):
 
         return vm_info
 
-    def _wait_for_ip(self, pod_id: str, timeout: int = 120) -> str:
+    @staticmethod
+    def _extract_ssh_port(pod: Dict[str, Any]) -> int:
         """
-        Wait for a pod to get a public IP address.
+        Pull the pod's public SSH port out of a RunPod pod description.
+
+        RunPod does not expose sshd on 22: it publishes container port 22 on a
+        random high port and reports the mapping only once the pod is running.
+        Reading 'sshPort' off the *create* response (which carries no port at
+        all) meant every pod was recorded as port 22, so SSH could never
+        connect. Falls back to 22 only when nothing reports a mapping.
+        """
+        mappings = pod.get('portMappings') or {}
+        for key in ('22', 22):
+            if mappings.get(key):
+                return int(mappings[key])
+
+        for entry in (pod.get('runtime') or {}).get('ports') or []:
+            if entry.get('privatePort') == 22 and entry.get('publicPort'):
+                return int(entry['publicPort'])
+
+        if pod.get('sshPort'):
+            return int(pod['sshPort'])
+
+        return 22
+
+    def _wait_for_endpoint(self, pod_id: str, timeout: int = 120) -> Tuple[str, int]:
+        """
+        Wait for a pod to become reachable, and report how to reach it.
 
         Args:
             pod_id: RunPod pod ID
             timeout: Maximum wait time in seconds
 
         Returns:
-            Public IP address
+            (public IP address, public SSH port)
 
         Raises:
             ProviderError: If timeout exceeded
@@ -169,7 +222,7 @@ class RunPodProvider(BaseProvider):
 
                 ip = pod.get('publicIp') or pod.get('ip')
                 if ip:
-                    return ip
+                    return ip, self._extract_ssh_port(pod)
 
                 status = pod.get('desiredStatus', pod.get('status', ''))
                 if status in ('EXITED', 'TERMINATED', 'ERROR'):
@@ -221,7 +274,7 @@ class RunPodProvider(BaseProvider):
         return {
             'vm_id': vm_id,
             'ip_address': pod.get('publicIp', pod.get('ip', 'pending')),
-            'ssh_port': int(pod.get('sshPort', 22)),
+            'ssh_port': self._extract_ssh_port(pod),
             'ssh_user': 'root',
             'status': status_map.get(pod_status, pod_status.lower()),
             'provider': 'runpod',
@@ -327,7 +380,7 @@ class RunPodProvider(BaseProvider):
             instances.append({
                 'vm_id': f"runpod-{pod_id}",
                 'ip_address': pod.get('publicIp', pod.get('ip', 'pending')),
-                'ssh_port': int(pod.get('sshPort', 22)),
+                'ssh_port': self._extract_ssh_port(pod),
                 'ssh_user': 'root',
                 'status': pod.get('desiredStatus', 'unknown').lower(),
                 'provider': 'runpod',
