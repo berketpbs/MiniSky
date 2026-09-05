@@ -163,14 +163,24 @@ class Task(BaseModel):
     @field_validator('workdir')
     @classmethod
     def validate_workdir(cls, v: Optional[str]) -> Optional[str]:
-        """Validate workdir exists if specified."""
-        if v is not None:
-            path = Path(v).expanduser()
-            if not path.exists():
-                raise ValueError(f"Workdir does not exist: {v}")
-            if not path.is_dir():
-                raise ValueError(f"Workdir is not a directory: {v}")
-        return v
+        """Validate workdir exists if specified, and pin it to an absolute path."""
+        if v is None:
+            return v
+
+        path = Path(v).expanduser()
+        if not path.exists():
+            raise ValueError(f"Workdir does not exist: {v}")
+        if not path.is_dir():
+            raise ValueError(f"Workdir is not a directory: {v}")
+
+        # Resolve before storing. A relative workdir is only meaningful in the
+        # shell that submitted the task, but a Task gets re-validated well
+        # outside it: ManagedJobController rebuilds one from the managed_jobs
+        # table, and the detached runner process has its own cwd. A relative
+        # path failed that re-validation, and load_persisted() dropped the job -
+        # so any managed job with a workdir silently disappeared from
+        # `minisky jobs list/status` when run from another directory.
+        return str(path.resolve())
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "Task":

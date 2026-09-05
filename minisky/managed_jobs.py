@@ -207,7 +207,15 @@ class ManagedJobController:
         for data in self.state.list_managed_job_data():
             try:
                 job = ManagedJob.from_dict(data)
-            except Exception:
+            except Exception as e:
+                # Skipping a row is the right call - one unreadable job
+                # shouldn't hide the rest - but do it loudly. Swallowing this
+                # silently is how a workdir that no longer re-validated turned
+                # into "Managed job not found" with nothing to go on.
+                console.print(
+                    f"[yellow]![/yellow] Skipping unreadable managed job "
+                    f"{data.get('job_id', '<unknown>')}: {e}"
+                )
                 continue
             with self._lock:
                 self._jobs[job.job_id] = job
