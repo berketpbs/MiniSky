@@ -347,8 +347,28 @@ class ClusterManager:
                 for n in cluster.nodes:
                     ip = n.private_ip or n.ip_address
                     hosts_entries.append(f"{ip} node{n.rank}")
-                
-                hosts_cmd = " && ".join([
+
+                # Drop any nodeN lines from a previous run before appending.
+                # The hostfile above is written with '>' and so is already
+                # idempotent; /etc/hosts was appended to blindly, which meant a
+                # retried or re-run setup kept stacking duplicate entries.
+                #
+                # Rewritten via a temp file rather than `sed -i`: sed renames a
+                # new file over the target, which fails with "Device or resource
+                # busy" whenever /etc/hosts is a bind mount (every Docker
+                # container, and some managed images). `cat >` truncates the
+                # existing inode instead, which works in both cases.
+                names = "|".join(f"node{n.rank}" for n in cluster.nodes)
+                strip_old = (
+                    f"grep -Ev '[[:space:]]({names})$' /etc/hosts > /tmp/.minisky_hosts"
+                    " || true"
+                )
+
+                hosts_cmd = "; ".join([
+                    strip_old,
+                    "cat /tmp/.minisky_hosts > /etc/hosts",
+                    "rm -f /tmp/.minisky_hosts",
+                ] + [
                     f"echo '{entry}' >> /etc/hosts"
                     for entry in hosts_entries
                 ])
