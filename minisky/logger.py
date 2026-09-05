@@ -15,6 +15,7 @@ import paramiko
 from rich.console import Console
 
 from .config import MiniSkyConfig
+from .ssh import paramiko_auth_kwargs
 
 console = Console()
 
@@ -124,11 +125,7 @@ class LogManager:
                 'timeout': 15,
             }
 
-            if key_path:
-                key = paramiko.RSAKey.from_private_key_file(key_path)
-                connect_kwargs['pkey'] = key
-            else:
-                connect_kwargs['look_for_keys'] = True
+            connect_kwargs.update(paramiko_auth_kwargs(key_path))
 
             ssh_client.connect(**connect_kwargs)
 

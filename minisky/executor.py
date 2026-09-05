@@ -12,6 +12,8 @@ from typing import Dict, Any, Optional, List, Callable
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from .ssh import paramiko_auth_kwargs
+
 console = Console()
 
 
@@ -68,24 +70,13 @@ class Executor:
                 key_path = self.vm_info.get('ssh_key_path')
                 
                 # Connect
-                if key_path:
-                    key = paramiko.RSAKey.from_private_key_file(key_path)
-                    self.ssh_client.connect(
-                        hostname=hostname,
-                        port=port,
-                        username=username,
-                        pkey=key,
-                        timeout=timeout
-                    )
-                else:
-                    # Try default key locations
-                    self.ssh_client.connect(
-                        hostname=hostname,
-                        port=port,
-                        username=username,
-                        timeout=timeout,
-                        look_for_keys=True
-                    )
+                self.ssh_client.connect(
+                    hostname=hostname,
+                    port=port,
+                    username=username,
+                    timeout=timeout,
+                    **paramiko_auth_kwargs(key_path),
+                )
                 
                 # Open SFTP client for file operations
                 self.sftp_client = self.ssh_client.open_sftp()

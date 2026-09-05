@@ -24,6 +24,7 @@ import paramiko
 from rich.console import Console
 
 from .config import MiniSkyConfig
+from .ssh import paramiko_auth_kwargs
 from .state import StateManager
 from .providers import get_provider
 
@@ -104,10 +105,7 @@ class ResourceMonitor:
                 'timeout': 10,
             }
             
-            if key_path:
-                connect_kwargs['key_filename'] = key_path
-            else:
-                connect_kwargs['look_for_keys'] = True
+            connect_kwargs.update(paramiko_auth_kwargs(key_path))
             
             self._ssh_client.connect(**connect_kwargs)
             return True

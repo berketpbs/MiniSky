@@ -13,27 +13,43 @@ def mock_vm_info():
     }
 
 @patch('paramiko.SSHClient')
-@patch('paramiko.RSAKey.from_private_key_file')
-def test_connect_success(mock_rsa, mock_ssh_client, mock_vm_info):
+def test_connect_success(mock_ssh_client, mock_vm_info):
     executor = Executor(mock_vm_info)
     mock_ssh = MagicMock()
     mock_ssh_client.return_value = mock_ssh
-    
+
     result = executor.connect(retries=1)
-    
+
     assert result is True
+    # key_filename, not a pre-parsed pkey: paramiko loads the file itself and
+    # so accepts Ed25519 keys, which is what MiniSky's SSHKeyManager generates.
     mock_ssh.connect.assert_called_once_with(
         hostname='192.168.1.100',
         port=22,
         username='root',
-        pkey=mock_rsa.return_value,
-        timeout=30
+        timeout=30,
+        key_filename='/mock/key/path',
     )
     mock_ssh.open_sftp.assert_called_once()
 
+
 @patch('paramiko.SSHClient')
-@patch('paramiko.RSAKey.from_private_key_file')
-def test_connect_failure(mock_rsa, mock_ssh_client, mock_vm_info):
+def test_connect_uses_ed25519_key_without_parsing_it(mock_ssh_client, tmp_path):
+    """Regression: an Ed25519 key used to blow up on paramiko.RSAKey."""
+    key = tmp_path / "id_ed25519"
+    key.write_text("-----BEGIN OPENSSH PRIVATE KEY-----\nnot-an-rsa-key\n")
+    mock_ssh_client.return_value = MagicMock()
+
+    executor = Executor({
+        'ip_address': '192.168.1.100', 'ssh_port': 22,
+        'ssh_user': 'root', 'ssh_key_path': str(key),
+    })
+
+    assert executor.connect(retries=1) is True
+    assert mock_ssh_client.return_value.connect.call_args.kwargs['key_filename'] == str(key)
+
+@patch('paramiko.SSHClient')
+def test_connect_failure(mock_ssh_client, mock_vm_info):
     executor = Executor(mock_vm_info)
     mock_ssh = MagicMock()
     mock_ssh.connect.side_effect = Exception("Connection refused")

@@ -27,6 +27,8 @@ import paramiko
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
+from .ssh import paramiko_auth_kwargs
+
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -297,22 +299,7 @@ class RsyncSyncer:
                 'timeout': 30,
             }
             
-            if key_path:
-                key_path_obj = Path(key_path)
-                try:
-                    key = paramiko.Ed25519Key.from_private_key_file(str(key_path_obj))
-                except Exception:
-                    try:
-                        key = paramiko.RSAKey.from_private_key_file(str(key_path_obj))
-                    except Exception:
-                        key = None
-                
-                if key:
-                    connect_kwargs['pkey'] = key
-                else:
-                    connect_kwargs['look_for_keys'] = True
-            else:
-                connect_kwargs['look_for_keys'] = True
+            connect_kwargs.update(paramiko_auth_kwargs(key_path))
             
             ssh_client.connect(**connect_kwargs)
             sftp_client = ssh_client.open_sftp()

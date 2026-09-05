@@ -18,6 +18,75 @@ from rich.console import Console
 console = Console()
 
 
+def default_key_search_paths() -> List[Path]:
+    """
+    Where MiniSky looks for a private key when nothing names one explicitly.
+
+    SSHKeyManager (provisioner.py) generates the last entry when none of these
+    exist, and resolves in this same order - the two must not drift, or a
+    launch could authenticate Phase 2 with one key and Phase 4 with another.
+    """
+    return [
+        Path.home() / ".ssh" / "id_ed25519",
+        Path.home() / ".ssh" / "id_rsa",
+        Path.home() / ".minisky" / "ssh" / "id_ed25519",
+    ]
+
+
+def resolve_key_path(key_path: Optional[str] = None) -> Optional[str]:
+    """
+    Work out which private key to authenticate with.
+
+    Order: the key the caller was given (a provider or the Provisioner may set
+    ``vm_info['ssh_key_path']``), then ``ssh.default_key_path`` from config,
+    then the default locations. Returns None when nothing is found, leaving the
+    caller to fall back to the agent.
+
+    No provider populates ``ssh_key_path`` today, so without this fallback every
+    consumer outside the Provisioner (workdir sync, `exec`, `logs`, autostop)
+    connected with no key at all and failed with "No authentication methods
+    available" - even though MiniSky had generated a perfectly good key.
+
+    Deliberately does *not* generate a key: that side effect belongs to the
+    launch path (SSHKeyManager), not to every connection attempt.
+    """
+    if key_path:
+        return str(key_path)
+
+    # A broken config file shouldn't take SSH down with it.
+    try:
+        from .config import MiniSkyConfig
+
+        configured = MiniSkyConfig().get("ssh.default_key_path")
+    except Exception:
+        configured = None
+    if configured:
+        return str(configured)
+
+    for path in default_key_search_paths():
+        if path.exists():
+            return str(path)
+    return None
+
+
+def paramiko_auth_kwargs(key_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Build the key-authentication kwargs for a paramiko ``connect()`` call.
+
+    Hands paramiko ``key_filename`` instead of a pre-parsed ``pkey``: paramiko
+    then loads the file itself and accepts every key type it supports, rather
+    than each call site guessing at the type. That guessing was a real bug -
+    MiniSky's own SSHKeyManager generates an **Ed25519** key, but several call
+    sites loaded it with ``paramiko.RSAKey.from_private_key_file()``, which
+    fails on it with "unpack requires a buffer of 4 bytes". SSH could never
+    succeed with a MiniSky-generated key on any provider.
+    """
+    resolved = resolve_key_path(key_path)
+    if resolved:
+        return {"key_filename": resolved}
+    return {"look_for_keys": True}
+
+
 @dataclass
 class PortForward:
     """Represents a port forwarding configuration."""

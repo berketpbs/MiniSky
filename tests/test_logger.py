@@ -141,15 +141,16 @@ class TestStreamLogs:
         mock_ssh_cls.return_value = mock_client
         mock_client.exec_command.return_value = (MagicMock(), iter([]), iter([]))
 
-        with patch("minisky.logger.paramiko.RSAKey.from_private_key_file") as mock_key:
-            mock_key.return_value = MagicMock()
-            vm_info = {
-                "vm_id": "vm-1", "ip_address": "10.0.0.1",
-                "ssh_port": 22, "ssh_user": "ubuntu",
-                "ssh_key_path": "/tmp/fake_key",
-            }
-            log_manager.stream_logs(vm_info, follow=False)
-            mock_key.assert_called_once_with("/tmp/fake_key")
+        vm_info = {
+            "vm_id": "vm-1", "ip_address": "10.0.0.1",
+            "ssh_port": 22, "ssh_user": "ubuntu",
+            "ssh_key_path": "/tmp/fake_key",
+        }
+        log_manager.stream_logs(vm_info, follow=False)
+
+        # Passed as key_filename so paramiko loads it - parsing it here as an
+        # RSA key failed on the Ed25519 key MiniSky generates for itself.
+        assert mock_client.connect.call_args.kwargs["key_filename"] == "/tmp/fake_key"
 
     @patch("minisky.logger.paramiko.SSHClient")
     def test_stream_logs_connection_error(self, mock_ssh_cls, log_manager):

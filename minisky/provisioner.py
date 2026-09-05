@@ -25,6 +25,7 @@ import logging
 import socket
 
 from minisky.executor import Executor, ExecutorError
+from minisky.ssh import default_key_search_paths
 from minisky.state import StateManager
 
 logger = logging.getLogger(__name__)
@@ -82,12 +83,9 @@ class SSHKeyManager:
         if self._key_path and self._key_path.exists():
             return self._key_path
         
-        # Check default locations
-        default_paths = [
-            Path.home() / ".ssh" / "id_ed25519",
-            Path.home() / ".ssh" / "id_rsa",
-            Path.home() / ".minisky" / "ssh" / "id_ed25519",
-        ]
+        # Check default locations (shared with ssh.resolve_key_path, so
+        # every consumer picks the same key this manager would generate)
+        default_paths = default_key_search_paths()
         
         for path in default_paths:
             if path.exists():

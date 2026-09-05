@@ -26,6 +26,8 @@ from rich.text import Text
 from rich.live import Live
 from rich.panel import Panel
 
+from .ssh import paramiko_auth_kwargs
+
 logger = logging.getLogger(__name__)
 console = Console()
 
@@ -179,28 +181,7 @@ class SSHLogStreamer:
             'timeout': 15,
         }
         
-        if key_path:
-            # Try different key types
-            key = None
-            key_path_obj = Path(key_path)
-            
-            try:
-                key = paramiko.Ed25519Key.from_private_key_file(str(key_path_obj))
-            except Exception:
-                try:
-                    key = paramiko.RSAKey.from_private_key_file(str(key_path_obj))
-                except Exception:
-                    try:
-                        key = paramiko.ECDSAKey.from_private_key_file(str(key_path_obj))
-                    except Exception:
-                        logger.warning(f"Could not load key from {key_path}, trying without key")
-            
-            if key:
-                connect_kwargs['pkey'] = key
-            else:
-                connect_kwargs['look_for_keys'] = True
-        else:
-            connect_kwargs['look_for_keys'] = True
+        connect_kwargs.update(paramiko_auth_kwargs(key_path))
         
         client.connect(**connect_kwargs)
         return client
@@ -510,8 +491,7 @@ def create_log_file_on_remote(
             'timeout': 15,
         }
         
-        if key_path:
-            connect_kwargs['look_for_keys'] = True
+        connect_kwargs.update(paramiko_auth_kwargs(key_path))
         
         client.connect(**connect_kwargs)
         
