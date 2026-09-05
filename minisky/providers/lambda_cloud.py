@@ -151,8 +151,16 @@ class LambdaProvider(BaseProvider):
 
         instance_id = instance_ids[0]
 
-        # Wait for instance to get an IP address
-        ip_address = self._wait_for_ip(instance_id)
+        # Wait for instance to get an IP address. The instance is already
+        # billing, so a failure here has to terminate it rather than orphan it.
+        try:
+            ip_address = self._wait_for_ip(instance_id)
+        except BaseException as e:
+            raise self.abort_launch(
+                f"Lambda instance {instance_id}",
+                lambda: self.terminate(f"lambda-{instance_id}"),
+                e,
+            )
 
         vm_info: VMInfo = {
             'vm_id': f"lambda-{instance_id}",

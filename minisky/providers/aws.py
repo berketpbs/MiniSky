@@ -206,9 +206,20 @@ class AWSProvider(BaseProvider):
 
         instance_id = response["Instances"][0]["InstanceId"]
 
+        # The instance is running and billing from here on, so a failure while
+        # waiting for its IP has to terminate it rather than orphan it.
+        try:
+            ip_address = self._wait_for_ip(client, instance_id)
+        except BaseException as e:
+            raise self.abort_launch(
+                f"EC2 instance {instance_id}",
+                lambda: self.terminate(f"aws-{instance_id}"),
+                e,
+            )
+
         vm_info: VMInfo = {
             "vm_id": f"aws-{instance_id}",
-            "ip_address": self._wait_for_ip(client, instance_id),
+            "ip_address": ip_address,
             "ssh_port": 22,
             "ssh_user": "ubuntu",
             "status": "running",

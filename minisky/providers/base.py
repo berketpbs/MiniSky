@@ -6,7 +6,7 @@ and implement all abstract methods.
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 class ProviderError(Exception):
@@ -143,16 +143,63 @@ class BaseProvider(ABC):
     def validate_resources(self, task: Any) -> bool:
         """
         Validate that provider can fulfill resource requirements.
-        
+
         Override this method to add provider-specific validation.
-        
+
         Args:
             task: Task with resource requirements
-            
+
         Returns:
             True if resources can be fulfilled
-            
+
         Raises:
             ProviderError: If resources cannot be fulfilled
         """
         return True
+
+    def abort_launch(
+        self,
+        resource_desc: str,
+        cleanup: Callable[[], Any],
+        error: Exception,
+    ) -> ProviderError:
+        """
+        Tear down a resource that was created but never became usable.
+
+        Every provider's launch() is two steps: create the instance, then wait
+        for it to come up. If the second step fails - the instance never gets
+        an IP, the API times out, the user hits Ctrl-C - the first step has
+        already happened and the cloud is billing for it. Without this, that
+        instance is orphaned: MiniSky raises, never records it in the state DB,
+        and so no `minisky status`, `terminate` or autostop will ever see it
+        again. It just runs until someone notices the invoice.
+
+        Cleanup is best-effort. If it also fails, the resource id goes into the
+        raised error rather than being swallowed - a user who has to kill an
+        instance by hand at least needs to know its id.
+
+        Args:
+            resource_desc: Human-readable id, e.g. "pod abc123"
+            cleanup: Callable that terminates the resource
+            error: The failure that made the resource useless
+
+        Returns:
+            The ProviderError to raise (never raises on its own, so callers
+            keep `raise` at the call site and static analysis stays happy).
+        """
+        # KeyboardInterrupt and friends stringify to "", which would leave the
+        # message reading "never became usable: ." - fall back to the type name.
+        reason = str(error) or type(error).__name__
+
+        try:
+            cleanup()
+            return ProviderError(
+                f"{resource_desc} never became usable: {reason}. "
+                f"It has been terminated, so it is not still billing."
+            )
+        except Exception as cleanup_error:
+            return ProviderError(
+                f"{resource_desc} never became usable: {reason}. "
+                f"Cleaning it up ALSO failed ({cleanup_error}), so it may still "
+                f"be running and billing - terminate it manually."
+            )

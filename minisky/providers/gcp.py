@@ -154,19 +154,26 @@ class GCPProvider(BaseProvider):
     def _ssh_metadata_items(self) -> List["compute_v1.Items"]:
         """Build instance metadata injecting an SSH public key, so the
         launched VM is actually reachable. Uses
-        providers.gcp.ssh_public_key_path if configured, else falls back
-        to ~/.ssh/id_rsa.pub if it exists. Without either, the instance
-        boots with no SSH access configured by MiniSky."""
+        providers.gcp.ssh_public_key_path if configured, else the key
+        MiniSky itself connects with. Without either, the instance boots
+        with no SSH access configured by MiniSky."""
         pubkey_path = self._msconfig.get("providers.gcp.ssh_public_key_path")
-        if not pubkey_path:
-            default_path = Path.home() / ".ssh" / "id_rsa.pub"
-            if default_path.exists():
-                pubkey_path = str(default_path)
 
-        if not pubkey_path or not Path(pubkey_path).exists():
-            return []
+        if pubkey_path and Path(pubkey_path).exists():
+            pubkey = Path(pubkey_path).read_text().strip()
+        else:
+            # Fall back to SSHKeyManager's key, not to ~/.ssh/id_rsa.pub.
+            # The old fallback injected whatever RSA key happened to be in
+            # ~/.ssh while MiniSky connects with ~/.minisky/ssh/id_ed25519 -
+            # so on a machine with an unrelated id_rsa the instance
+            # authorized a key MiniSky would never present, and SSH failed.
+            try:
+                from ..provisioner import SSHKeyManager
 
-        pubkey = Path(pubkey_path).read_text().strip()
+                pubkey = SSHKeyManager().get_public_key()
+            except Exception:
+                return []
+
         return [compute_v1.Items(key="ssh-keys", value=f"{_SSH_USER}:{pubkey}")]
 
     def launch(self, task: Any) -> VMInfo:
@@ -241,9 +248,23 @@ class GCPProvider(BaseProvider):
         except GoogleAPIError as e:
             raise ProviderError(f"GCP launch error: {str(e)}")
 
+        # The instance exists and is billing from here on, so a failure while
+        # waiting for its IP has to terminate it rather than orphan it.
+        # (An insert whose operation.result() times out above can orphan one
+        # too; that window is narrower and needs a GCP-specific "does it
+        # exist?" probe, so it is not covered here.)
+        try:
+            ip_address = self._wait_for_ip(client, project, zone, instance_name)
+        except BaseException as e:
+            raise self.abort_launch(
+                f"GCE instance {instance_name}",
+                lambda: self.terminate(f"gcp-{instance_name}"),
+                e,
+            )
+
         vm_info: VMInfo = {
             "vm_id": f"gcp-{instance_name}",
-            "ip_address": self._wait_for_ip(client, project, zone, instance_name),
+            "ip_address": ip_address,
             "ssh_port": 22,
             "ssh_user": _SSH_USER,
             "status": "running",
