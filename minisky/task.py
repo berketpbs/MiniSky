@@ -9,12 +9,20 @@ and port forwarding configuration.
 
 from typing import List, Dict, Optional
 from pathlib import Path
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import yaml
 
 
 class ResourceRequirements(BaseModel):
     """Resource requirements for a VM instance."""
+
+    # Reject unknown keys instead of silently dropping them. Pydantic's
+    # default is to ignore them, which meant a task file that said
+    # `resources: {cloud: runpod}` - SkyPilot's spelling, and an easy typo for
+    # `provider:` - launched on the default provider without a word of
+    # warning. On a tool that spends money, silently running somewhere other
+    # than where you asked is not a tolerable failure mode.
+    model_config = ConfigDict(extra="forbid")
 
     gpu: Optional[str] = Field(
         None,
@@ -67,6 +75,9 @@ class FileMount(BaseModel):
     - MOUNT: Mount a cloud bucket as a filesystem (future)
     """
 
+    # See ResourceRequirements: unknown keys are an error, not a shrug.
+    model_config = ConfigDict(extra="forbid")
+
     source: str = Field(
         ...,
         description="Source path (local directory or cloud bucket URI)"
@@ -99,6 +110,8 @@ class Task(BaseModel):
             num_nodes=1,
         )
     """
+    # See ResourceRequirements: unknown keys are an error, not a shrug.
+    model_config = ConfigDict(extra="forbid")
 
     name: str = Field(
         ...,

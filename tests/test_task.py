@@ -181,3 +181,32 @@ class TestTask:
         monkeypatch.chdir(tmp_path)
 
         assert Path(Task.from_yaml(str(yaml_file)).workdir) == real.resolve()
+
+    def test_unknown_resource_key_is_rejected(self, tmp_path):
+        """
+        `cloud:` is SkyPilot's spelling and an easy mistake for `provider:`.
+        Pydantic used to drop it silently and launch on the default provider,
+        so you paid for a run on somewhere you never asked for.
+        """
+        yaml_file = tmp_path / "typo.yaml"
+        yaml_file.write_text(
+            "name: typo\nresources:\n  cloud: runpod\n  gpu: A100\nrun:\n  - echo hi\n"
+        )
+        with pytest.raises(Exception, match="cloud"):
+            Task.from_yaml(str(yaml_file))
+
+    def test_unknown_top_level_key_is_rejected(self, tmp_path):
+        yaml_file = tmp_path / "typo.yaml"
+        yaml_file.write_text(
+            "name: typo\nprovder: runpod\nrun:\n  - echo hi\n"  # note the typo
+        )
+        with pytest.raises(Exception, match="provder"):
+            Task.from_yaml(str(yaml_file))
+
+    def test_shipped_examples_all_parse(self):
+        """The examples are documentation; they have to actually load."""
+        examples = Path(__file__).resolve().parent.parent / "examples"
+        found = sorted(examples.glob("*.yaml"))
+        assert found, "no example task files found"
+        for example in found:
+            Task.from_yaml(str(example))

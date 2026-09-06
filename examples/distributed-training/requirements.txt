@@ -1,0 +1,3 @@
+# Dependencies for the distributed training example.
+# The task's setup phase installs torch/accelerate/deepspeed directly;
+# add anything else your training code needs here.
