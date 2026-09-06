@@ -207,6 +207,14 @@ class Task(BaseModel):
         if data is None:
             raise ValueError(f"Empty YAML file: {yaml_path}")
 
+        # A relative workdir means "next to the task file", which is how it
+        # reads when you write it and how every example is laid out. Resolving
+        # it against the shell's cwd instead meant `minisky launch
+        # ~/tasks/train.yaml` failed from anywhere but that one directory.
+        workdir = data.get('workdir')
+        if isinstance(workdir, str) and not Path(workdir).expanduser().is_absolute():
+            data['workdir'] = str(path.parent / workdir)
+
         # Handle file_mounts shorthand: if value is a string, treat as source
         if 'file_mounts' in data and isinstance(data['file_mounts'], dict):
             processed = {}

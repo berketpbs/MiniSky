@@ -149,3 +149,35 @@ class TestTask:
             data = yaml.safe_load(f)
         assert data['name'] == 'export-test'
         assert data['run'] == ['echo ok']
+
+    def test_relative_workdir_resolves_against_the_task_file(self, tmp_path, monkeypatch):
+        """
+        `workdir: ./src` means "next to the task file". Resolving it against
+        the shell's cwd instead made `minisky launch ~/tasks/train.yaml` fail
+        from anywhere but that one directory.
+        """
+        task_dir = tmp_path / "tasks"
+        (task_dir / "src").mkdir(parents=True)
+        yaml_file = task_dir / "train.yaml"
+        yaml_file.write_text(
+            "name: rel-workdir\nprovider: mock\nworkdir: ./src\nrun:\n  - echo ok\n"
+        )
+
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        task = Task.from_yaml(str(yaml_file))
+
+        assert Path(task.workdir) == (task_dir / "src").resolve()
+
+    def test_absolute_workdir_is_left_alone(self, tmp_path, monkeypatch):
+        real = tmp_path / "somewhere" / "code"
+        real.mkdir(parents=True)
+        yaml_file = tmp_path / "train.yaml"
+        yaml_file.write_text(
+            f"name: abs-workdir\nprovider: mock\nworkdir: {real}\nrun:\n  - echo ok\n"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        assert Path(Task.from_yaml(str(yaml_file)).workdir) == real.resolve()

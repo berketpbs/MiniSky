@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   minisky-cli:
     build:
@@ -19,7 +17,9 @@ services:
     stdin_open: true
     tty: true
 
-  # Optional: API server for web dashboard
+  # Optional: API server, and the web dashboard if it has been built
+  # (cd dashboard && npm install && npm run build) - `minisky serve` hosts
+  # both from one process, so there is no separate dashboard service.
   minisky-api:
     build:
       context: .
@@ -34,27 +34,5 @@ services:
     ports:
       - "8000:8000"
     working_dir: /workspace
-    entrypoint: ["python", "-m", "minisky.api.main"]
-    depends_on:
-      - minisky-cli
-    restart: unless-stopped
-
-  # Optional: Dashboard (if available)
-  minisky-dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: minisky:latest
-    container_name: minisky-dashboard
-    environment:
-      - PYTHONUNBUFFERED=1
-    volumes:
-      - ~/.minisky:/root/.minisky
-      - .:/workspace
-    ports:
-      - "5000:5000"
-    working_dir: /workspace
-    entrypoint: ["python", "-m", "minisky.dashboard.app"]
-    depends_on:
-      - minisky-api
+    entrypoint: ["minisky", "serve", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
