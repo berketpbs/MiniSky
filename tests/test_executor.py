@@ -61,8 +61,7 @@ def test_connect_failure(mock_ssh_client, mock_vm_info):
     assert "Failed to connect after 2 attempts" in str(exc_info.value)
 
 @patch('paramiko.SSHClient')
-@patch('paramiko.RSAKey.from_private_key_file')
-def test_execute_command(mock_rsa, mock_ssh_client, mock_vm_info):
+def test_execute_command(mock_ssh_client, mock_vm_info):
     executor = Executor(mock_vm_info)
     mock_ssh = MagicMock()
     mock_ssh_client.return_value = mock_ssh
@@ -100,8 +99,7 @@ def test_execute_command(mock_rsa, mock_ssh_client, mock_vm_info):
     assert "echo $TEST_VAR" in called_command
 
 @patch('paramiko.SSHClient')
-@patch('paramiko.RSAKey.from_private_key_file')
-def test_execute_command_on_line_callback_gets_each_line_tagged_by_stream(mock_rsa, mock_ssh_client, mock_vm_info):
+def test_execute_command_on_line_callback_gets_each_line_tagged_by_stream(mock_ssh_client, mock_vm_info):
     executor = Executor(mock_vm_info)
     mock_ssh = MagicMock()
     mock_ssh_client.return_value = mock_ssh
@@ -128,8 +126,7 @@ def test_execute_command_on_line_callback_gets_each_line_tagged_by_stream(mock_r
 
 
 @patch('paramiko.SSHClient')
-@patch('paramiko.RSAKey.from_private_key_file')
-def test_execute_task_forwards_on_line_for_setup_and_run_commands(mock_rsa, mock_ssh_client, mock_vm_info):
+def test_execute_task_forwards_on_line_for_setup_and_run_commands(mock_ssh_client, mock_vm_info):
     from minisky.task import Task
 
     executor = Executor(mock_vm_info)
@@ -161,8 +158,7 @@ def test_execute_task_forwards_on_line_for_setup_and_run_commands(mock_rsa, mock
 
 
 @patch('paramiko.SSHClient')
-@patch('paramiko.RSAKey.from_private_key_file')
-def test_sync_files(mock_rsa, mock_ssh_client, mock_vm_info, tmp_path):
+def test_sync_files(mock_ssh_client, mock_vm_info, tmp_path):
     executor = Executor(mock_vm_info)
     mock_ssh = MagicMock()
     mock_ssh_client.return_value = mock_ssh
@@ -188,3 +184,91 @@ def test_sync_files(mock_rsa, mock_ssh_client, mock_vm_info, tmp_path):
     mock_sftp.put.assert_called_once()
     args, _ = mock_sftp.put.call_args
     assert "/home/root/remote_workdir" in args[1]
+
+
+# ---------------------------------------------------------------------------
+# Remote logging and detached execution
+# ---------------------------------------------------------------------------
+
+def test_tee_to_log_preserves_exit_code():
+    """
+    A bare `cmd | tee` reports tee's status, which is ~always 0 - that would
+    make every failed task look successful. The status has to survive the pipe.
+    """
+    wrapped = Executor._tee_to_log("false", "/tmp/minisky_task.log")
+
+    assert "tee -a /tmp/minisky_task.log" in wrapped
+    assert "2>&1" in wrapped          # stderr is captured too
+    assert 'exit $_code' in wrapped   # the command's status, not tee's
+    assert "mktemp" in wrapped        # per-command, so concurrent runs can't race
+
+
+@patch('paramiko.SSHClient')
+def test_execute_command_logs_remotely_when_asked(mock_ssh_client, mock_vm_info):
+    executor = Executor(mock_vm_info)
+    mock_ssh = MagicMock()
+    mock_ssh_client.return_value = mock_ssh
+    executor.connect(retries=1)
+    mock_ssh.exec_command.return_value = (MagicMock(), MagicMock(), MagicMock())
+
+    executor.execute_command("echo hi", stream_output=False,
+                             log_file="/tmp/minisky_task.log")
+
+    sent = mock_ssh.exec_command.call_args.args[0]
+    assert "echo hi" in sent
+    assert "tee -a /tmp/minisky_task.log" in sent
+
+
+@patch('paramiko.SSHClient')
+def test_execute_command_without_log_file_is_unwrapped(mock_ssh_client, mock_vm_info):
+    executor = Executor(mock_vm_info)
+    mock_ssh = MagicMock()
+    mock_ssh_client.return_value = mock_ssh
+    executor.connect(retries=1)
+    mock_ssh.exec_command.return_value = (MagicMock(), MagicMock(), MagicMock())
+
+    executor.execute_command("echo hi", stream_output=False)
+
+    assert mock_ssh.exec_command.call_args.args[0] == "echo hi"
+
+
+@patch('paramiko.SSHClient')
+def test_execute_detached_survives_the_ssh_session(mock_ssh_client, mock_vm_info):
+    """
+    The whole point of --detach: the task keeps running once MiniSky exits,
+    with its output going somewhere `minisky logs` can read it.
+    """
+    executor = Executor(mock_vm_info)
+    mock_ssh = MagicMock()
+    mock_ssh_client.return_value = mock_ssh
+    executor.connect(retries=1)
+
+    stdout = MagicMock()
+    stdout.read.return_value = b"4242\n"
+    stdout.channel.recv_exit_status.return_value = 0
+    mock_ssh.exec_command.return_value = (MagicMock(), stdout, MagicMock())
+
+    pid = executor.execute_detached("python train.py", "/tmp/minisky_task.log")
+
+    assert pid == "4242"
+    sent = mock_ssh.exec_command.call_args.args[0]
+    assert sent.startswith("nohup ")
+    assert ">> /tmp/minisky_task.log 2>&1" in sent
+    assert "< /dev/null" in sent   # no stdin, or it dies when the session closes
+    assert sent.rstrip().endswith("& echo $!")
+
+
+@patch('paramiko.SSHClient')
+def test_execute_detached_reports_failure_to_start(mock_ssh_client, mock_vm_info):
+    executor = Executor(mock_vm_info)
+    mock_ssh = MagicMock()
+    mock_ssh_client.return_value = mock_ssh
+    executor.connect(retries=1)
+
+    stdout = MagicMock()
+    stdout.read.return_value = b""
+    stdout.channel.recv_exit_status.return_value = 1
+    mock_ssh.exec_command.return_value = (MagicMock(), stdout, MagicMock())
+
+    with pytest.raises(ExecutorError, match="detached"):
+        executor.execute_detached("python train.py", "/tmp/minisky_task.log")

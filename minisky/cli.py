@@ -225,10 +225,10 @@ def launch(
                 f"{autostop_minutes} idle minutes (background, log: {log_path})"
             )
 
-        if detach:
-            console.print("\n[yellow]Task launched in detached mode[/yellow]")
-            console.print(f"Use 'minisky logs {vm_info['vm_id']}' to view logs")
-            return
+        # NOTE: --detach is handled after setup and the workdir sync, not here.
+        # Returning at this point only provisioned a VM: setup and run never
+        # executed, so the task the user asked for never started and the VM
+        # sat there billing with nothing on it.
 
         # Phase 2: Wait for SSH and provision
         console.print("\n[bold]Phase 2/4: Establishing SSH connection[/bold]")
@@ -296,6 +296,19 @@ def launch(
             finally:
                 executor.disconnect()
         
+        # Detach here, not before Phase 2: setup and the workdir sync have to
+        # happen locally-supervised (they are what make the VM usable), but the
+        # run commands themselves can keep going without us.
+        if detach:
+            detached_command = " && ".join(task.run)
+            pid = provisioner.run_task_detached(detached_command, env=task.env)
+            console.print("\n[yellow]Task running in detached mode[/yellow]")
+            console.print(f"  Remote PID: {pid}")
+            console.print(f"  Log file:   {provision_config.log_file}")
+            console.print(f"\nFollow it with: minisky logs {vm_info['vm_id']} -f")
+            console.print(f"To terminate:   minisky terminate {vm_info['vm_id']}")
+            return
+
         # Run task commands
         for i, cmd in enumerate(task.run, 1):
             console.print(f"\n[green]Run {i}/{len(task.run)}:[/green] {cmd}")

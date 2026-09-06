@@ -63,6 +63,9 @@ class ProvisionConfig:
     run_timeout: int = 0  # 0 = no timeout for run command
     stream_logs: bool = True
     log_callback: Optional[Callable[[str], None]] = None
+    # Remote file every setup/run command also appends its output to. This is
+    # what `minisky logs` reads; leave it None to write no remote log.
+    log_file: Optional[str] = "/tmp/minisky_task.log"
 
 
 class SSHKeyManager:
@@ -304,7 +307,8 @@ class Provisioner:
             try:
                 exit_code = self.executor.execute_command(
                     cmd,
-                    stream_output=self.config.stream_logs
+                    stream_output=self.config.stream_logs,
+                    log_file=self.config.log_file,
                 )
                 
                 if exit_code != 0:
@@ -342,7 +346,8 @@ class Provisioner:
         try:
             exit_code = self.executor.execute_command(
                 full_command,
-                stream_output=self.config.stream_logs
+                stream_output=self.config.stream_logs,
+                log_file=self.config.log_file,
             )
             
             if exit_code == 0:
@@ -356,6 +361,35 @@ class Provisioner:
             self._transition(ProvisionState.FAILED, f"Task error: {e}")
             return -1, str(e)
     
+    def run_task_detached(
+        self,
+        run_command: str,
+        env: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """
+        Start the task on the VM and return without waiting for it.
+
+        Output goes to config.log_file so `minisky logs <vm-id>` can follow it
+        after this process exits.
+
+        Args:
+            run_command: The command to execute
+            env: Environment variables to set
+
+        Returns:
+            Remote PID of the running task
+        """
+        self._transition(ProvisionState.RUNNING_TASK)
+        self._log(f"[run] Starting detached: {run_command}")
+
+        pid = self.executor.execute_detached(
+            run_command,
+            log_file=self.config.log_file or "/tmp/minisky_task.log",
+            env=env,
+        )
+        self._log(f"[run] Detached task running as pid {pid}")
+        return pid
+
     def provision_and_run(
         self,
         setup_commands: Optional[List[str]] = None,

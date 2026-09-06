@@ -100,6 +100,84 @@ class Executor:
             self.ssh_client.close()
         console.print("[cyan]Disconnected from VM[/cyan]")
     
+    def _build_command(
+        self,
+        command: str,
+        env: Optional[Dict[str, str]] = None,
+        workdir: Optional[str] = None,
+    ) -> str:
+        """Apply environment and working directory to a command."""
+        env_str = ""
+        if env:
+            env_str = " ".join([f"{k}={shlex.quote(str(v))}" for k, v in env.items()]) + " "
+
+        full_command = f"{env_str}{command}"
+
+        if workdir:
+            full_command = f"cd {workdir} && {full_command}"
+
+        return full_command
+
+    @staticmethod
+    def _tee_to_log(command: str, log_file: str) -> str:
+        """
+        Wrap a command so its output is appended to a log file on the VM.
+
+        `minisky logs` reads that file over SSH, so without this it had nothing
+        to read: every reader referenced /tmp/minisky_task.log but no code path
+        ever wrote it, and the command streamed only to the local console.
+
+        The exit code survives the pipe via a temp file rather than
+        PIPESTATUS - a plain `cmd | tee` would report tee's status and make
+        every failed task look successful. mktemp keeps concurrent commands on
+        one VM from clobbering each other's status.
+        """
+        return (
+            '_rc=$(mktemp); '
+            f'{{ {command} ; echo $? > "$_rc" ; }} 2>&1 | tee -a {shlex.quote(log_file)} ; '
+            '_code=$(cat "$_rc"); rm -f "$_rc"; exit $_code'
+        )
+
+    def execute_detached(
+        self,
+        command: str,
+        log_file: str,
+        env: Optional[Dict[str, str]] = None,
+        workdir: Optional[str] = None,
+    ) -> str:
+        """
+        Start a command on the VM and return without waiting for it.
+
+        The command keeps running after this SSH session closes, with all
+        output appended to log_file for `minisky logs` to follow. This is what
+        makes `minisky launch --detach` mean anything: it used to return
+        straight after the VM was provisioned, so setup and run never executed
+        at all and the VM just sat there billing.
+
+        Returns:
+            Remote PID of the detached process
+        """
+        if not self.ssh_client:
+            raise ExecutorError("Not connected to VM")
+
+        full_command = self._build_command(command, env=env, workdir=workdir)
+
+        launcher = (
+            f"nohup bash -c {shlex.quote(full_command)} "
+            f">> {shlex.quote(log_file)} 2>&1 < /dev/null & echo $!"
+        )
+
+        try:
+            _, stdout, _ = self.ssh_client.exec_command(launcher)
+            pid = stdout.read().decode().strip()
+            if stdout.channel.recv_exit_status() != 0 or not pid:
+                raise ExecutorError(f"Failed to start detached command: {command}")
+            return pid
+        except ExecutorError:
+            raise
+        except Exception as e:
+            raise ExecutorError(f"Failed to start detached command: {str(e)}")
+
     def execute_command(
         self,
         command: str,
@@ -107,6 +185,7 @@ class Executor:
         stream_output: bool = True,
         workdir: Optional[str] = None,
         on_line: Optional[Callable[[str, str], None]] = None,
+        log_file: Optional[str] = None,
     ) -> int:
         """
         Execute a command on the remote VM.
@@ -121,6 +200,8 @@ class Executor:
                 'stderr' - lets callers (e.g. the API server) forward
                 output live instead of only seeing it after the command
                 finishes
+            log_file: Remote path to also append this command's output to, so
+                `minisky logs` can show it. Exit code is preserved.
 
         Returns:
             Exit code of the command
@@ -132,16 +213,10 @@ class Executor:
             raise ExecutorError("Not connected to VM")
 
         try:
-            # Prepare environment
-            env_str = ""
-            if env:
-                env_str = " ".join([f"{k}={shlex.quote(str(v))}" for k, v in env.items()]) + " "
+            full_command = self._build_command(command, env=env, workdir=workdir)
 
-            full_command = f"{env_str}{command}"
-
-            # Change to workdir if specified
-            if workdir:
-                full_command = f"cd {workdir} && {full_command}"
+            if log_file:
+                full_command = self._tee_to_log(full_command, log_file)
 
             # Execute command
             stdin, stdout, stderr = self.ssh_client.exec_command(full_command)
