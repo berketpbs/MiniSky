@@ -57,8 +57,27 @@ def _wait_for_port(port: int, timeout: float = 30.0) -> bool:
     return False
 
 
+def _minisky_key(home: Path):
+    """
+    Generate MiniSky's own key the way a launch would, but inside `home`.
+
+    SSHKeyManager always writes under Path.home(), which tests/conftest.py
+    redirects to one temp directory shared by the whole session - and several
+    unit tests depend on that home staying empty (autostop's `_connect` falls
+    back to look_for_keys only when no key is found anywhere). Generating the
+    key there would leave one behind for every test that runs after this
+    suite, so Path.home() is redirected again, just across these two calls.
+    """
+    from minisky.provisioner import SSHKeyManager
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(Path, "home", staticmethod(lambda: home))
+        key_manager = SSHKeyManager()
+        return key_manager.get_key_path(), key_manager.get_public_key()
+
+
 @pytest.fixture(scope="session")
-def fake_vm():
+def fake_vm(tmp_path_factory):
     """
     A container running sshd, authorised with the same key the real launch
     path would use, yielded as a vm_info dict.
@@ -69,11 +88,7 @@ def fake_vm():
     if not _docker_available():
         pytest.skip("Docker is not available; skipping SSH end-to-end tests")
 
-    from minisky.provisioner import SSHKeyManager
-
-    key_manager = SSHKeyManager()
-    private_key = key_manager.get_key_path()
-    public_key = key_manager.get_public_key()
+    private_key, public_key = _minisky_key(tmp_path_factory.mktemp("e2e-home"))
 
     build = _docker("build", "-t", IMAGE, str(DOCKERFILE_DIR))
     if build.returncode != 0:

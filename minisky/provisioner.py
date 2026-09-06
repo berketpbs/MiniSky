@@ -173,13 +173,25 @@ class Provisioner:
         self._start_time: float = 0
     
     def _create_executor(self) -> Executor:
-        """Create an executor with SSH key path."""
-        key_path = self.ssh_key_manager.get_key_path()
-        
-        # Add key path to vm_info
+        """
+        Create an executor, preferring the key the VM actually authorises.
+
+        A provider that sets ``vm_info['ssh_key_path']`` - an EC2 keypair
+        .pem, a key the user named in config - knows which key the instance
+        will accept. Overwriting it with MiniSky's own generated key meant
+        setup and run could not authenticate on any such VM, while a plain
+        `minisky exec` (which reads vm_info directly) connected fine.
+
+        SSHKeyManager stays the fallback, and generating a key when none
+        exists is still the launch path's job - which is exactly here.
+        """
         vm_info_with_key = dict(self.vm_info)
-        vm_info_with_key["ssh_key_path"] = str(key_path)
-        
+
+        if not vm_info_with_key.get("ssh_key_path"):
+            vm_info_with_key["ssh_key_path"] = str(
+                self.ssh_key_manager.get_key_path()
+            )
+
         return Executor(vm_info_with_key)
     
     @property
