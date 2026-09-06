@@ -198,9 +198,22 @@ def test_tee_to_log_preserves_exit_code():
     wrapped = Executor._tee_to_log("false", "/tmp/minisky_task.log")
 
     assert "tee -a /tmp/minisky_task.log" in wrapped
-    assert "2>&1" in wrapped          # stderr is captured too
-    assert 'exit $_code' in wrapped   # the command's status, not tee's
-    assert "mktemp" in wrapped        # per-command, so concurrent runs can't race
+    assert "2>&1" in wrapped               # stderr is captured too
+    assert "exit ${_code:-1}" in wrapped   # the command's status, not tee's
+    assert "mktemp" in wrapped             # per-command, so concurrent runs can't race
+
+
+def test_tee_to_log_runs_the_command_in_a_subshell():
+    """
+    Regression: with a brace group alone, a task ending in `exit 17` killed the
+    pipeline's shell before the status was recorded, so the temp file stayed
+    empty and the bare `exit` returned 0 - a failed task reported as success.
+    """
+    wrapped = Executor._tee_to_log("echo hi; exit 17", "/tmp/minisky_task.log")
+
+    assert "( echo hi; exit 17 )" in wrapped
+    # and if the status file is empty anyway, fail rather than pass
+    assert ":-1}" in wrapped
 
 
 @patch('paramiko.SSHClient')

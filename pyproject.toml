@@ -62,6 +62,9 @@ addopts = [
     "--cov-report=term-missing",
     "--cov-report=html",
 ]
+markers = [
+    "e2e: exercises a real sshd in a container (needs Docker; skipped without it)",
+]
 
 [tool.black]
 line-length = 88

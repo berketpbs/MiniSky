@@ -131,11 +131,19 @@ class Executor:
         PIPESTATUS - a plain `cmd | tee` would report tee's status and make
         every failed task look successful. mktemp keeps concurrent commands on
         one VM from clobbering each other's status.
+
+        The command runs in a subshell, `( ... )`, not just the brace group.
+        A brace group shares the shell, so a task ending in a bare `exit 17`
+        terminated the pipeline's shell outright: the status was never
+        recorded, the temp file stayed empty, and `exit` with no argument
+        returned 0 - reinstating exactly the false-success this wrapper exists
+        to prevent. The `:-1` default is the same guard from the other side:
+        if the status is somehow missing, report failure rather than success.
         """
         return (
             '_rc=$(mktemp); '
-            f'{{ {command} ; echo $? > "$_rc" ; }} 2>&1 | tee -a {shlex.quote(log_file)} ; '
-            '_code=$(cat "$_rc"); rm -f "$_rc"; exit $_code'
+            f'{{ ( {command} ) ; echo $? > "$_rc" ; }} 2>&1 | tee -a {shlex.quote(log_file)} ; '
+            '_code=$(cat "$_rc"); rm -f "$_rc"; exit ${_code:-1}'
         )
 
     def execute_detached(

@@ -142,3 +142,7 @@ uv venv
 uv pip sync pyproject.toml
 uv run pytest tests/
 ```
+
+`tests/e2e/` exercises the SSH paths against a container running real sshd.
+It needs Docker and skips itself when Docker is unavailable; use
+`uv run pytest tests -m "not e2e"` to leave it out.

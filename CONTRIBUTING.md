@@ -27,6 +27,15 @@ uv pip sync pyproject.toml
    ```bash
    uv run pytest tests/
    ```
+
+   `tests/e2e/` runs MiniSky against a container running real sshd, covering
+   the parts that only exist over SSH (key auth, remote exit codes, log
+   capture, workdir sync, detached runs). It needs Docker and skips cleanly
+   without it:
+   ```bash
+   uv run pytest tests/e2e        # just the end-to-end suite
+   uv run pytest tests -m "not e2e"  # everything else
+   ```
 5. Commit your changes and push to your fork
 6. Open a Pull Request
 
