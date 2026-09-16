@@ -170,6 +170,9 @@ class RunPodProvider(BaseProvider):
         Raises:
             ProviderError: If timeout exceeded
         """
+        if timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+
         client = self._get_client()
         start = time.time()
 

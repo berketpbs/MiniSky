@@ -161,6 +161,10 @@ class TestRunPodLaunch:
 # ---------------------------------------------------------------------------
 
 class TestWaitForIp:
+    def test_wait_for_ip_rejects_non_positive_timeout(self, provider):
+        with pytest.raises(ValueError, match="timeout"):
+            provider._wait_for_ip("pod1", timeout=0)
+
     def test_wait_for_ip_immediate(self, provider):
         provider._client.get.return_value = _mock_response(200, {
             "pod": {"publicIp": "1.2.3.4"}
